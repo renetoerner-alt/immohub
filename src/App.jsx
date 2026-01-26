@@ -3575,6 +3575,25 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
             Felder zurücksetzen
           </button>
         </Acc>
+        <Acc icon={<IconSonder color="#8b5cf6" />} title="Sonderausstattung" sum={s.sonderausstattung.length > 0 ? `${s.sonderausstattung.length}x, ${fmt(c.saSumme)}` : 'Keine'} open={sec === 'sa'} toggle={() => setSec(sec === 'sa' ? null : 'sa')} color="#8b5cf6">
+          <p className="hint">z.B. Küche – 10% AfA über 10 Jahre</p>
+          {s.sonderausstattung.map((x, i) => (
+            <div key={i} className="sa-row">
+              <input value={x.bezeichnung} onChange={e => updSA(i, 'bezeichnung', e.target.value)} placeholder="Bezeichnung" />
+              <NumInput value={x.betrag} onChange={v => updSA(i, 'betrag', v)} placeholder="€" />
+              <button onClick={() => delSA(i)}>×</button>
+            </div>
+          ))}
+          <button className="btn-add" onClick={addSA}>+ Hinzufügen</button>
+          {c.saSumme > 0 && <div className="res hl"><span>AfA SA p.a.</span><span>{fmt(c.afaSA)}</span></div>}
+          <hr />
+          <button className="btn-reset-section" onClick={() => setResetConfirm('sonderausstattung')}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+            </svg>
+            Felder zurücksetzen
+          </button>
+        </Acc>
         <Acc 
           icon={<IconMiete color={s.nutzung === 'eigengenutzt' ? 'var(--text-dim)' : '#ec4899'} />} 
           title="Miete" 
@@ -4116,25 +4135,6 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
             Felder zurücksetzen
           </button>
         </Acc>
-        <Acc icon={<IconSonder color="#8b5cf6" />} title="Sonderausstattung" sum={s.sonderausstattung.length > 0 ? `${s.sonderausstattung.length}x, ${fmt(c.saSumme)}` : 'Keine'} open={sec === 'sa'} toggle={() => setSec(sec === 'sa' ? null : 'sa')} color="#8b5cf6">
-          <p className="hint">z.B. Küche – 10% AfA über 10 Jahre</p>
-          {s.sonderausstattung.map((x, i) => (
-            <div key={i} className="sa-row">
-              <input value={x.bezeichnung} onChange={e => updSA(i, 'bezeichnung', e.target.value)} placeholder="Bezeichnung" />
-              <NumInput value={x.betrag} onChange={v => updSA(i, 'betrag', v)} placeholder="€" />
-              <button onClick={() => delSA(i)}>×</button>
-            </div>
-          ))}
-          <button className="btn-add" onClick={addSA}>+ Hinzufügen</button>
-          {c.saSumme > 0 && <div className="res hl"><span>AfA SA p.a.</span><span>{fmt(c.afaSA)}</span></div>}
-          <hr />
-          <button className="btn-reset-section" onClick={() => setResetConfirm('sonderausstattung')}>
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-            </svg>
-            Felder zurücksetzen
-          </button>
-        </Acc>
         {beteiligte.length > 0 && (
           <Acc icon={<IconPerson color="#8b5cf6" />} title="Beteiligte" sum={(() => {
             const bet = p.beteiligungen || [];
@@ -4231,61 +4231,6 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
         </div>
         {secExpanded && (
           <div className="accs-secondary-content">
-        <Acc icon={<IconBell color="#ef4444" />} title="Erinnerungen" sum={(() => {
-          const erinnerungen = p.erinnerungen || [];
-          const offen = erinnerungen.filter(e => !e.erledigt);
-          if (erinnerungen.length === 0) return 'Keine';
-          if (offen.length === 0) return `${erinnerungen.length} (alle erledigt)`;
-          return `${offen.length} offen`;
-        })()} open={sec === 'erinnerungen'} toggle={() => setSec(sec === 'erinnerungen' ? null : 'erinnerungen')} color="#ef4444">
-          <p className="hint">Termine und Fristen im Blick behalten (z.B. Zinsbindung, Nebenkostenabrechnung)</p>
-          <div className="erinnerungen-list">
-            {(p.erinnerungen || []).map((e, i) => {
-              const isOverdue = e.datum && new Date(e.datum) < new Date() && !e.erledigt;
-              const isUpcoming = e.datum && new Date(e.datum) <= new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) && new Date(e.datum) >= new Date() && !e.erledigt;
-              return (
-                <div key={i} className={`erinnerung-row ${e.erledigt ? 'done' : ''} ${isOverdue ? 'overdue' : ''} ${isUpcoming ? 'upcoming' : ''}`}>
-                  <input 
-                    type="checkbox" 
-                    checked={e.erledigt || false}
-                    onChange={ev => {
-                      const newE = [...(p.erinnerungen || [])];
-                      newE[i] = { ...newE[i], erledigt: ev.target.checked };
-                      upd({ ...p, erinnerungen: newE });
-                    }}
-                    className="erinnerung-check"
-                  />
-                  <div className="erinnerung-datum">
-                    <DateInput 
-                      value={e.datum || ''} 
-                      onChange={v => {
-                        const newE = [...(p.erinnerungen || [])];
-                        newE[i] = { ...newE[i], datum: v };
-                        upd({ ...p, erinnerungen: newE });
-                      }}
-                    />
-                  </div>
-                  <input 
-                    type="text" 
-                    value={e.titel || ''} 
-                    onChange={ev => {
-                      const newE = [...(p.erinnerungen || [])];
-                      newE[i] = { ...newE[i], titel: ev.target.value };
-                      upd({ ...p, erinnerungen: newE });
-                    }}
-                    placeholder="Titel (z.B. Zinsbindung prüfen)"
-                    className="erinnerung-titel"
-                  />
-                  <button className="erinnerung-del" onClick={() => {
-                    const newE = (p.erinnerungen || []).filter((_, x) => x !== i);
-                    upd({ ...p, erinnerungen: newE });
-                  }}>×</button>
-                </div>
-              );
-            })}
-          </div>
-          <button className="btn-add" onClick={() => upd({ ...p, erinnerungen: [...(p.erinnerungen || []), { datum: '', titel: '', erledigt: false }] })}>+ Erinnerung hinzufügen</button>
-        </Acc>
         <Acc icon={<IconDocuments color="#f97316" />} title="Dokumente / Fotos" sum={(() => {
           const docs = p.dokumente || [];
           if (docs.length === 0) return 'Keine';
@@ -4370,13 +4315,13 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
                       <option value="sonstige">Sonstiges</option>
                     </select>
                     {doc.fileType?.startsWith('image/') && (
-                      <button className="doc-view" onClick={() => window.open(doc.fileData, '_blank')} title="Ansehen">👁</button>
+                      <button className="doc-view" onClick={() => window.open(doc.fileData, '_blank')} title="Ansehen">◉</button>
                     )}
                     {doc.fileType === 'application/pdf' && (
                       <button className="doc-view" onClick={() => {
                         const win = window.open();
                         win.document.write(`<iframe src="${doc.fileData}" style="width:100%;height:100%;border:none;"></iframe>`);
-                      }} title="Ansehen">👁</button>
+                      }} title="Ansehen">◉</button>
                     )}
                   </>
                 ) : (
@@ -4449,6 +4394,61 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
             placeholder="z.B. Kontakt Hausverwalter, Besonderheiten, geplante Renovierungen..."
             rows={6}
           />
+        </Acc>
+        <Acc icon={<IconBell color="#ef4444" />} title="Erinnerungen" sum={(() => {
+          const erinnerungen = p.erinnerungen || [];
+          const offen = erinnerungen.filter(e => !e.erledigt);
+          if (erinnerungen.length === 0) return 'Keine';
+          if (offen.length === 0) return `${erinnerungen.length} (alle erledigt)`;
+          return `${offen.length} offen`;
+        })()} open={sec === 'erinnerungen'} toggle={() => setSec(sec === 'erinnerungen' ? null : 'erinnerungen')} color="#ef4444">
+          <p className="hint">Termine und Fristen im Blick behalten (z.B. Zinsbindung, Nebenkostenabrechnung)</p>
+          <div className="erinnerungen-list">
+            {(p.erinnerungen || []).map((e, i) => {
+              const isOverdue = e.datum && new Date(e.datum) < new Date() && !e.erledigt;
+              const isUpcoming = e.datum && new Date(e.datum) <= new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) && new Date(e.datum) >= new Date() && !e.erledigt;
+              return (
+                <div key={i} className={`erinnerung-row ${e.erledigt ? 'done' : ''} ${isOverdue ? 'overdue' : ''} ${isUpcoming ? 'upcoming' : ''}`}>
+                  <input 
+                    type="checkbox" 
+                    checked={e.erledigt || false}
+                    onChange={ev => {
+                      const newE = [...(p.erinnerungen || [])];
+                      newE[i] = { ...newE[i], erledigt: ev.target.checked };
+                      upd({ ...p, erinnerungen: newE });
+                    }}
+                    className="erinnerung-check"
+                  />
+                  <div className="erinnerung-datum">
+                    <DateInput 
+                      value={e.datum || ''} 
+                      onChange={v => {
+                        const newE = [...(p.erinnerungen || [])];
+                        newE[i] = { ...newE[i], datum: v };
+                        upd({ ...p, erinnerungen: newE });
+                      }}
+                    />
+                  </div>
+                  <input 
+                    type="text" 
+                    value={e.titel || ''} 
+                    onChange={ev => {
+                      const newE = [...(p.erinnerungen || [])];
+                      newE[i] = { ...newE[i], titel: ev.target.value };
+                      upd({ ...p, erinnerungen: newE });
+                    }}
+                    placeholder="Titel (z.B. Zinsbindung prüfen)"
+                    className="erinnerung-titel"
+                  />
+                  <button className="erinnerung-del" onClick={() => {
+                    const newE = (p.erinnerungen || []).filter((_, x) => x !== i);
+                    upd({ ...p, erinnerungen: newE });
+                  }}>×</button>
+                </div>
+              );
+            })}
+          </div>
+          <button className="btn-add" onClick={() => upd({ ...p, erinnerungen: [...(p.erinnerungen || []), { datum: '', titel: '', erledigt: false }] })}>+ Erinnerung hinzufügen</button>
         </Acc>
           </div>
         )}
@@ -5810,7 +5810,7 @@ const OnboardingTour = ({ onComplete }) => {
   
   const steps = [
     {
-      title: "Willkommen bei ImmoHub! 🏠",
+      title: "Willkommen bei ImmoHub!",
       content: "Dein persönliches Tool für die Verwaltung deines Immobilien-Portfolios. In dieser kurzen Tour zeige ich dir die wichtigsten Funktionen.",
       icon: <IconHome color="#6366f1" />
     },
@@ -6606,6 +6606,8 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
           .dash-totals{grid-template-columns:repeat(2,1fr)}
           .dash-table-wrap{overflow-x:auto}
           .dash-cards{grid-template-columns:1fr}
+          .user-email-text{display:none}
+          .user-menu-btn{padding:6px 8px;gap:4px}
         }
         
         /* Dashboard Styles */
@@ -7470,8 +7472,9 @@ const UserMenu = ({ user, onSignOut }) => {
     <div style={{ position: "relative" }}>
       <button
         onClick={() => setOpen(!open)}
+        className="user-menu-btn"
         style={{
-          display: "flex", alignItems: "center", gap: "8px", padding: "6px 12px",
+          display: "flex", alignItems: "center", gap: "6px", padding: "6px 10px",
           background: "var(--bg-input)", border: "1px solid var(--border)", borderRadius: "8px",
           color: "var(--text)", fontSize: "13px", cursor: "pointer"
         }}
@@ -7479,11 +7482,11 @@ const UserMenu = ({ user, onSignOut }) => {
         <span style={{
           width: "28px", height: "28px", borderRadius: "50%", background: "#6366f1",
           display: "flex", alignItems: "center", justifyContent: "center",
-          color: "#fff", fontWeight: "600", fontSize: "12px"
+          color: "#fff", fontWeight: "600", fontSize: "12px", flexShrink: 0
         }}>
           {user?.email?.[0]?.toUpperCase() || "?"}
         </span>
-        <span style={{ maxWidth: "120px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <span className="user-email-text" style={{ maxWidth: "100px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {user?.email || "Benutzer"}
         </span>
         <span style={{ fontSize: "10px" }}>▼</span>
@@ -7494,7 +7497,7 @@ const UserMenu = ({ user, onSignOut }) => {
           background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: "8px",
           padding: "8px", minWidth: "160px", zIndex: 1000, boxShadow: "0 4px 12px rgba(0,0,0,0.3)"
         }}>
-          <div style={{ padding: "8px", fontSize: "12px", color: "var(--text-muted)", borderBottom: "1px solid var(--border)" }}>
+          <div style={{ padding: "8px", fontSize: "12px", color: "var(--text-muted)", borderBottom: "1px solid var(--border)", wordBreak: "break-all" }}>
             {user?.email}
           </div>
           <button
@@ -7522,7 +7525,18 @@ const LoadingScreen = () => (
     background: "#0a0a0f", color: "#fff"
   }}>
     <div style={{ textAlign: "center" }}>
-      <div style={{ fontSize: "32px", marginBottom: "16px" }}>🏠</div>
+      <div style={{ width: "48px", height: "48px", margin: "0 auto 16px" }}>
+        <svg viewBox="0 0 40 40" width="48" height="48">
+          <defs>
+            <linearGradient id="loadGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="#6366f1" stopOpacity="0.9" />
+              <stop offset="100%" stopColor="#6366f1" stopOpacity="0.4" />
+            </linearGradient>
+          </defs>
+          <path d="M20 8L8 18v14h8v-8h8v8h8V18L20 8z" fill="url(#loadGrad)" />
+          <circle cx="20" cy="18" r="2" fill="rgba(0,0,0,0.3)" />
+        </svg>
+      </div>
       <div style={{ fontSize: "14px", color: "#888" }}>Laden...</div>
     </div>
   </div>
@@ -7561,7 +7575,18 @@ const AuthScreen = () => {
     <div style={{ minHeight: "100vh", background: "#0a0a0f", display: "flex", alignItems: "center", justifyContent: "center", padding: "20px" }}>
       <div style={{ width: "100%", maxWidth: "400px" }}>
         <div style={{ textAlign: "center", marginBottom: "32px" }}>
-          <div style={{ fontSize: "48px", marginBottom: "8px" }}>🏠</div>
+          <div style={{ width: "64px", height: "64px", margin: "0 auto 12px" }}>
+            <svg viewBox="0 0 40 40" width="64" height="64">
+              <defs>
+                <linearGradient id="authGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stopColor="#6366f1" stopOpacity="0.9" />
+                  <stop offset="100%" stopColor="#6366f1" stopOpacity="0.4" />
+                </linearGradient>
+              </defs>
+              <path d="M20 8L8 18v14h8v-8h8v8h8V18L20 8z" fill="url(#authGrad)" />
+              <circle cx="20" cy="18" r="2" fill="rgba(0,0,0,0.3)" />
+            </svg>
+          </div>
           <h1 style={{ fontSize: "28px", color: "#fff", margin: "0 0 4px" }}>
             <span>Immo</span><span style={{ color: "#6366f1" }}>Hub</span>
           </h1>
@@ -7586,7 +7611,7 @@ const AuthScreen = () => {
                 />
                 <button type="button" onClick={() => setShowPw(!showPw)}
                   style={{ position: "absolute", right: "12px", top: "32px", background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: "16px" }}>
-                  {showPw ? "🙈" : "👁"}
+                  {showPw ? "○" : "◉"}
                 </button>
               </div>
             )}
