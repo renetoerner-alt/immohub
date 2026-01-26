@@ -2243,7 +2243,7 @@ Wichtig:
                     <div key={i} className={`file-item ${i === currentFileIndex ? 'current' : ''} ${i < currentFileIndex || (i === currentFileIndex && processingStatus === 'done') ? 'done' : ''}`}>
                       <span className="file-status">
                         {i < currentFileIndex || (i === currentFileIndex && processingStatus === 'done') ? '✓' : 
-                         i === currentFileIndex && parsing ? '⏳' : 
+                         i === currentFileIndex && parsing ? '⟳' : 
                          (i + 1)}
                       </span>
                       <span className="file-name">{f.name}</span>
@@ -3700,6 +3700,74 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
           <div className="res"><span>Jahres-Kaltmiete</span><span className="pos">{fmt(((s.kaltmiete || 0) + (s.mieteStellplatz || 0) + (s.mieteSonderausstattung || 0)) * 12)}</span></div>
           
           <hr />
+          {/* Geplante Mieterhöhungen */}
+          <div className="field-group-label">Geplante Mieterhöhungen</div>
+          <p className="hint">Staffelmiete, Indexmiete oder geplante Anpassungen</p>
+          {(p.mieterhöhungen || []).length > 0 && (
+            <div className="miet-erhoehungen-list">
+              {(p.mieterhöhungen || []).map((m, i) => (
+                <div key={i} className="miet-erhoehung-row">
+                  <div className="miet-erhoehung-datum">
+                    <DateInput 
+                      value={m.datum || ''} 
+                      onChange={v => {
+                        const newM = [...(p.mieterhöhungen || [])];
+                        newM[i] = { ...newM[i], datum: v };
+                        upd({ ...p, mieterhöhungen: newM });
+                      }}
+                    />
+                  </div>
+                  <div className="miet-erhoehung-betrag">
+                    <NumInput 
+                      value={m.neueKaltmiete || ''} 
+                      onChange={v => {
+                        const newM = [...(p.mieterhöhungen || [])];
+                        newM[i] = { ...newM[i], neueKaltmiete: v };
+                        upd({ ...p, mieterhöhungen: newM });
+                      }}
+                      placeholder="Neue Kaltmiete"
+                    />
+                    <span>€</span>
+                  </div>
+                  <select 
+                    value={m.grund || 'staffel'} 
+                    onChange={e => {
+                      const newM = [...(p.mieterhöhungen || [])];
+                      newM[i] = { ...newM[i], grund: e.target.value };
+                      upd({ ...p, mieterhöhungen: newM });
+                    }}
+                    className="miet-erhoehung-grund"
+                  >
+                    <option value="staffel">Staffelmiete</option>
+                    <option value="index">Indexmiete</option>
+                    <option value="mietspiegel">Mietspiegel</option>
+                    <option value="modernisierung">Modernisierung</option>
+                    <option value="sonstige">Sonstige</option>
+                  </select>
+                  <button className="miet-erhoehung-del" onClick={() => {
+                    const newM = (p.mieterhöhungen || []).filter((_, x) => x !== i);
+                    upd({ ...p, mieterhöhungen: newM });
+                  }}>×</button>
+                </div>
+              ))}
+            </div>
+          )}
+          <button className="btn-add" onClick={() => upd({ ...p, mieterhöhungen: [...(p.mieterhöhungen || []), { datum: '', neueKaltmiete: 0, grund: 'staffel' }] })}>+ Mieterhöhung planen</button>
+          
+          {/* Zusammenfassung geplante Erhöhungen */}
+          {(p.mieterhöhungen || []).length > 0 && (() => {
+            const zukunft = (p.mieterhöhungen || []).filter(m => m.datum && new Date(m.datum) > new Date()).sort((a, b) => new Date(a.datum) - new Date(b.datum));
+            if (zukunft.length === 0) return null;
+            const naechste = zukunft[0];
+            return (
+              <div className="res hl" style={{ marginTop: '12px' }}>
+                <span>Nächste Erhöhung: {formatDateDE(naechste.datum)}</span>
+                <span>{fmt(naechste.neueKaltmiete)}</span>
+              </div>
+            );
+          })()}
+          
+          <hr />
           <div className="field-group-label">Kaution</div>
           <Input label="Kautionsbetrag" value={s.kaution} onChange={v => set('kaution', v)} suffix="€" />
           <div className="mietstatus-checkboxes">
@@ -3853,6 +3921,7 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
               <button className="btn-add" onClick={() => upd({ ...p, miethistorie: [...(p.miethistorie || []), { von: '', bis: '', kaltmiete: 0, nebenkosten: 0, stellplatz: 0, sonstiges: 0, grund: '' }] })}>+ Mietperiode hinzufügen</button>
             </div>
           )}
+          
           <hr />
           <button className="btn-reset-section" onClick={() => setResetConfirm('miete')}>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -4564,6 +4633,7 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
                   upd({
                     ...p,
                     miethistorie: [],
+                    mieterhöhungen: [],
                     stammdaten: {
                       ...s,
                       mieterName: '',
@@ -6016,7 +6086,7 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
     setSaved(exists ? saved.map(x => x.id === toSave.id ? toSave : x) : [...saved, toSave]);
     setCurr(toSave);
     setValidationErrors({});
-    showToast('success', 'Erfolgreich gespeichert ✓');
+    // Toast entfernt - Cloud-Status zeigt bereits "Gespeichert" an
   };
   
   const [deleteConfirm, setDeleteConfirm] = useState(null);
@@ -6608,6 +6678,8 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
           .dash-cards{grid-template-columns:1fr}
           .user-email-text{display:none}
           .user-menu-btn{padding:6px 8px;gap:4px}
+          .cloud-status-text{display:none}
+          .cloud-status{margin-left:8px}
         }
         
         /* Dashboard Styles */
@@ -6918,6 +6990,18 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
         .mhist-del{position:absolute;top:8px;right:8px;width:24px;height:24px;border:none;background:transparent;color:var(--text-dim);cursor:pointer;border-radius:4px;font-size:14px}
         .mhist-del:hover{background:rgba(239,68,68,0.15);color:#ef4444}
         .mhist-row{position:relative}
+        
+        /* Geplante Mieterhöhungen */
+        .miet-erhoehungen-list{display:flex;flex-direction:column;gap:8px;margin-bottom:12px}
+        .miet-erhoehung-row{display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(34,197,94,0.05);border:1px solid rgba(34,197,94,0.2);border-radius:6px;position:relative}
+        .miet-erhoehung-datum{width:130px}
+        .miet-erhoehung-datum input{width:100%;padding:6px 8px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px}
+        .miet-erhoehung-betrag{display:flex;align-items:center;gap:4px}
+        .miet-erhoehung-betrag input{width:100px;padding:6px 8px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px;font-family:'JetBrains Mono',monospace;text-align:right}
+        .miet-erhoehung-betrag span{font-size:11px;color:var(--text-dim)}
+        .miet-erhoehung-grund{flex:1;min-width:100px;padding:6px 8px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px}
+        .miet-erhoehung-del{width:28px;height:28px;border:none;background:transparent;color:var(--text-dim);cursor:pointer;border-radius:4px;font-size:16px}
+        .miet-erhoehung-del:hover{background:rgba(239,68,68,0.15);color:#ef4444}
         
         /* Frühere Mieter */
         .frueherer-mieter-section{margin-top:16px;padding-top:12px;border-top:1px solid var(--border)}
@@ -7459,8 +7543,9 @@ const CloudStatus = ({ status }) => {
   };
   const d = getDisplay();
   return (
-    <span style={{ marginLeft: "12px", fontSize: "11px", color: d.color, display: "flex", alignItems: "center", gap: "4px" }}>
-      <span style={{ fontSize: "13px" }}>{d.icon}</span> {d.text}
+    <span className="cloud-status" style={{ marginLeft: "12px", fontSize: "11px", color: d.color, display: "flex", alignItems: "center", gap: "4px" }}>
+      <span style={{ fontSize: "13px" }}>{d.icon}</span>
+      <span className="cloud-status-text">{d.text}</span>
     </span>
   );
 };
@@ -7522,7 +7607,7 @@ const UserMenu = ({ user, onSignOut }) => {
 const LoadingScreen = () => (
   <div style={{
     height: "100vh", display: "flex", alignItems: "center", justifyContent: "center",
-    background: "#0a0a0f", color: "#fff"
+    background: "#0a0a0f", color: "#fff", fontFamily: "'Inter', system-ui, -apple-system, sans-serif"
   }}>
     <div style={{ textAlign: "center" }}>
       <div style={{ width: "48px", height: "48px", margin: "0 auto 16px" }}>
@@ -7572,7 +7657,7 @@ const AuthScreen = () => {
   };
 
   return (
-    <div style={{ minHeight: "100vh", background: "#0a0a0f", display: "flex", alignItems: "center", justifyContent: "center", padding: "20px" }}>
+    <div style={{ minHeight: "100vh", background: "#0a0a0f", display: "flex", alignItems: "center", justifyContent: "center", padding: "20px", fontFamily: "'Inter', system-ui, -apple-system, sans-serif" }}>
       <div style={{ width: "100%", maxWidth: "400px" }}>
         <div style={{ textAlign: "center", marginBottom: "32px" }}>
           <div style={{ width: "64px", height: "64px", margin: "0 auto 12px" }}>
@@ -7587,13 +7672,13 @@ const AuthScreen = () => {
               <circle cx="20" cy="18" r="2" fill="rgba(0,0,0,0.3)" />
             </svg>
           </div>
-          <h1 style={{ fontSize: "28px", color: "#fff", margin: "0 0 4px" }}>
+          <h1 style={{ fontSize: "28px", color: "#fff", margin: "0 0 4px", fontWeight: "600" }}>
             <span>Immo</span><span style={{ color: "#6366f1" }}>Hub</span>
           </h1>
-          <p style={{ color: "#888", fontSize: "14px" }}>Dein Immobilien-Portfolio</p>
+          <p style={{ color: "#888", fontSize: "14px", fontWeight: "400" }}>Dein Immobilien-Portfolio</p>
         </div>
         <div style={{ background: "#111118", border: "1px solid #2a2a3a", borderRadius: "12px", padding: "24px" }}>
-          <h2 style={{ color: "#fff", fontSize: "18px", marginBottom: "20px", textAlign: "center" }}>
+          <h2 style={{ color: "#fff", fontSize: "18px", marginBottom: "20px", textAlign: "center", fontWeight: "600" }}>
             {mode === "login" ? "Anmelden" : mode === "register" ? "Registrieren" : "Passwort zurücksetzen"}
           </h2>
           <form onSubmit={handleSubmit}>
@@ -7618,8 +7703,17 @@ const AuthScreen = () => {
             {error && <div style={{ color: "#ef4444", fontSize: "13px", marginBottom: "16px", padding: "10px", background: "rgba(239,68,68,0.1)", borderRadius: "6px" }}>{error}</div>}
             {message && <div style={{ color: "#22c55e", fontSize: "13px", marginBottom: "16px", padding: "10px", background: "rgba(34,197,94,0.1)", borderRadius: "6px" }}>{message}</div>}
             <button type="submit" disabled={loading}
-              style={{ width: "100%", padding: "12px", background: "#6366f1", border: "none", borderRadius: "8px", color: "#fff", fontSize: "14px", fontWeight: "600", cursor: loading ? "not-allowed" : "pointer", opacity: loading ? 0.7 : 1 }}>
-              {loading ? "..." : mode === "login" ? "Anmelden" : mode === "register" ? "Registrieren" : "Link senden"}
+              style={{ width: "100%", padding: "12px", background: "#6366f1", border: "none", borderRadius: "8px", color: "#fff", fontSize: "14px", fontWeight: "600", cursor: loading ? "not-allowed" : "pointer", opacity: loading ? 0.7 : 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "8px" }}>
+              {loading ? (
+                <>
+                  <span style={{ 
+                    display: "inline-block", width: "16px", height: "16px", 
+                    border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", 
+                    borderRadius: "50%", animation: "spin 0.8s linear infinite" 
+                  }}></span>
+                  <span>Wird geladen...</span>
+                </>
+              ) : mode === "login" ? "Anmelden" : mode === "register" ? "Registrieren" : "Link senden"}
             </button>
           </form>
           <div style={{ marginTop: "16px", textAlign: "center" }}>
