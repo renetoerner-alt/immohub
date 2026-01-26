@@ -175,6 +175,117 @@ const fmtD = (v) => new Intl.NumberFormat('de-DE', { style: 'currency', currency
 const fmtP = (v) => new Intl.NumberFormat('de-DE', { style: 'percent', minimumFractionDigits: 2 }).format(v || 0);
 const fmtPlain = (v) => new Intl.NumberFormat('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v || 0);
 
+// ============================================================================
+// Datei-Komprimierung für Upload (max 2MB)
+// ============================================================================
+const MAX_FILE_SIZE = 2 * 1024 * 1024; // 2 MB
+
+// Bild komprimieren
+const compressImage = (file, maxSize = MAX_FILE_SIZE) => {
+  return new Promise((resolve) => {
+    const img = new Image();
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    
+    img.onload = () => {
+      let { width, height } = img;
+      let quality = 0.8;
+      
+      // Maximale Dimensionen
+      const maxDim = 1600;
+      if (width > maxDim || height > maxDim) {
+        if (width > height) {
+          height = (height / width) * maxDim;
+          width = maxDim;
+        } else {
+          width = (width / height) * maxDim;
+          height = maxDim;
+        }
+      }
+      
+      canvas.width = width;
+      canvas.height = height;
+      ctx.drawImage(img, 0, 0, width, height);
+      
+      // Qualität reduzieren bis unter maxSize
+      const tryCompress = (q) => {
+        const dataUrl = canvas.toDataURL('image/jpeg', q);
+        const base64 = dataUrl.split(',')[1];
+        const size = atob(base64).length;
+        
+        if (size > maxSize && q > 0.3) {
+          tryCompress(q - 0.1);
+        } else {
+          resolve({ base64, mimeType: 'image/jpeg', originalSize: file.size, compressedSize: size });
+        }
+      };
+      
+      tryCompress(quality);
+    };
+    
+    img.src = URL.createObjectURL(file);
+  });
+};
+
+// PDF: Nur Base64 zurückgeben (API limitiert auf erste Seiten)
+const processPDF = (file) => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64 = reader.result.split(',')[1];
+      const size = atob(base64).length;
+      
+      if (size > MAX_FILE_SIZE * 2) {
+        // Warnung bei sehr großen PDFs
+        resolve({ 
+          base64, 
+          mimeType: 'application/pdf', 
+          originalSize: file.size, 
+          warning: 'PDF ist sehr groß. Bei Fehlern bitte nur die relevanten Seiten als separates PDF hochladen.'
+        });
+      } else {
+        resolve({ base64, mimeType: 'application/pdf', originalSize: file.size });
+      }
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+};
+
+// Hauptfunktion: Datei für Upload vorbereiten
+const prepareFileForUpload = async (file) => {
+  const isImage = file.type.startsWith('image/');
+  const isPDF = file.type === 'application/pdf';
+  
+  if (isImage) {
+    // Bilder immer komprimieren wenn > 500KB
+    if (file.size > 500 * 1024) {
+      return await compressImage(file);
+    } else {
+      // Kleine Bilder direkt verwenden
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          resolve({ base64: reader.result.split(',')[1], mimeType: file.type, originalSize: file.size });
+        };
+        reader.readAsDataURL(file);
+      });
+    }
+  } else if (isPDF) {
+    return await processPDF(file);
+  } else {
+    // Andere Dateitypen: direkt als Base64
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        resolve({ base64: reader.result.split(',')[1], mimeType: file.type, originalSize: file.size });
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+};
+
 // Immobilien-Typ Farben
 const TYP_COLORS = {
   etw: { bg: 'rgba(99, 102, 241, 0.15)', border: '#6366f1', text: '#818cf8' },   // Lila - ETW
@@ -1491,24 +1602,38 @@ const ImportModal = ({ onClose, onImport, existingImmo = null }) => {
     }
   };
 
-  const processFile = (selectedFile) => {
+  const processFile = async (selectedFile) => {
     setError(null);
     setParsedData(null);
     setMergeMode(false);
     setMergeDecisions({});
     setDocumentType(null);
     
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const result = e.target.result;
-      setBase64Data(result.split(',')[1]);
+    try {
+      // Datei komprimieren/vorbereiten
+      const prepared = await prepareFileForUpload(selectedFile);
+      setBase64Data(prepared.base64);
+      
+      // Warnung bei großen Dateien anzeigen
+      if (prepared.warning) {
+        console.warn(prepared.warning);
+      }
+      
+      // Preview für Bilder
       if (selectedFile.type.startsWith('image/')) {
-        setPreview(result);
+        setPreview('data:' + (prepared.mimeType || selectedFile.type) + ';base64,' + prepared.base64);
       } else {
         setPreview(null);
       }
-    };
-    reader.readAsDataURL(selectedFile);
+      
+      // Info über Komprimierung (optional)
+      if (prepared.compressedSize && prepared.originalSize > prepared.compressedSize) {
+        console.log(`Datei komprimiert: ${(prepared.originalSize / 1024).toFixed(0)} KB → ${(prepared.compressedSize / 1024).toFixed(0)} KB`);
+      }
+    } catch (err) {
+      console.error('Fehler beim Verarbeiten der Datei:', err);
+      setError('Fehler beim Verarbeiten der Datei: ' + err.message);
+    }
   };
 
   const handleDrop = (e) => {
@@ -2871,22 +2996,23 @@ const MiethistorieImportModal = ({ onClose, onImport }) => {
     if (selectedFile) processFile(selectedFile);
   };
 
-  const processFile = (selectedFile) => {
+  const processFile = async (selectedFile) => {
     setFile(selectedFile);
     setError(null);
     setParsedMiethistorie(null);
     
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const result = e.target.result;
-      setBase64Data(result.split(',')[1]);
+    try {
+      const prepared = await prepareFileForUpload(selectedFile);
+      setBase64Data(prepared.base64);
+      
       if (selectedFile.type.startsWith('image/')) {
-        setPreview(result);
+        setPreview('data:' + (prepared.mimeType || selectedFile.type) + ';base64,' + prepared.base64);
       } else {
         setPreview(null);
       }
-    };
-    reader.readAsDataURL(selectedFile);
+    } catch (err) {
+      setError('Fehler beim Verarbeiten der Datei: ' + err.message);
+    }
   };
 
   const handleDrop = (e) => {
@@ -3112,22 +3238,23 @@ const DarlehenImportModal = ({ onClose, onImport }) => {
     if (selectedFile) processFile(selectedFile);
   };
 
-  const processFile = (selectedFile) => {
+  const processFile = async (selectedFile) => {
     setFile(selectedFile);
     setError(null);
     setParsedDarlehen(null);
     
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const result = e.target.result;
-      setBase64Data(result.split(',')[1]);
+    try {
+      const prepared = await prepareFileForUpload(selectedFile);
+      setBase64Data(prepared.base64);
+      
       if (selectedFile.type.startsWith('image/')) {
-        setPreview(result);
+        setPreview('data:' + (prepared.mimeType || selectedFile.type) + ';base64,' + prepared.base64);
       } else {
         setPreview(null);
       }
-    };
-    reader.readAsDataURL(selectedFile);
+    } catch (err) {
+      setError('Fehler beim Verarbeiten der Datei: ' + err.message);
+    }
   };
 
   const handleDrop = (e) => {
