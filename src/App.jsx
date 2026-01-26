@@ -798,7 +798,7 @@ const createEmpty = () => ({
     kautionErhalten: false, // Kaution wurde erhalten
     kautionZurueckgezahlt: false, // Kaution wurde zurückgezahlt
     maklerProvision: 0, notarkosten: 0, grunderwerbsteuer: 0, mehrkosten: 0,
-    afaSatz: 3, baujahr: 2020,
+    afaSatz: 3, degressiveAfa: 0, baujahr: 2020,
     // Eigenkapital-Details
     eigenkapitalAnteil: 20, 
     eigenkapitalBetrag: 0,
@@ -1664,37 +1664,29 @@ Wichtig:
 - "gefundeneFelder" enthält die Namen aller extrahierten Felder`;
 
     try {
-      const content = isPDF 
-        ? [
-            { type: "document", source: { type: "base64", media_type: mediaType, data: base64Data } },
-            { type: "text", text: "Analysiere dieses Dokument. Erkenne den Dokumenttyp, extrahiere alle Immobilien- und Darlehensdaten. Achte auf laufende Nummern zur Zuordnung. Antworte nur mit JSON." }
-          ]
-        : [
-            { type: "image", source: { type: "base64", media_type: mediaType, data: base64Data } },
-            { type: "text", text: "Analysiere dieses Bild/Dokument. Erkenne den Dokumenttyp, extrahiere alle Immobilien- und Darlehensdaten. Achte auf laufende Nummern zur Zuordnung. Antworte nur mit JSON." }
-          ];
+      const fullPrompt = systemPrompt + "\n\nAnalysiere dieses Dokument. Erkenne den Dokumenttyp, extrahiere alle Immobilien- und Darlehensdaten. Achte auf laufende Nummern zur Zuordnung. Antworte nur mit JSON.";
 
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
+      const response = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 8192,
-          system: systemPrompt,
-          messages: [{ role: "user", content }]
+          image: base64Data,
+          mimeType: mediaType,
+          systemPrompt: fullPrompt
         })
       });
 
       if (!response.ok) {
-        throw new Error(`API Fehler: ${response.status}`);
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || `API Fehler: ${response.status}`);
       }
 
       const data = await response.json();
-      const textContent = data.content?.find(c => c.type === 'text')?.text || '';
+      const textContent = data.text || '';
       
-      // Prüfen ob Antwort abgeschnitten wurde
-      if (data.stop_reason === 'max_tokens') {
-        throw new Error('Die Antwort wurde abgeschnitten. Bitte versuche es mit weniger Dokumenten oder kleineren Dateien.');
+      // Prüfen ob Antwort leer
+      if (!textContent) {
+        throw new Error('Keine Antwort vom Server erhalten.');
       }
       
       // JSON aus der Antwort extrahieren
@@ -2948,31 +2940,25 @@ Wichtig:
 - Bei unklaren Werten 0 oder leer lassen`;
 
     try {
-      const content = isPDF 
-        ? [
-            { type: "document", source: { type: "base64", media_type: mediaType, data: base64Data } },
-            { type: "text", text: "Extrahiere die Mietdaten aus diesem Mietvertrag für die Miethistorie. Antworte nur mit JSON." }
-          ]
-        : [
-            { type: "image", source: { type: "base64", media_type: mediaType, data: base64Data } },
-            { type: "text", text: "Extrahiere die Mietdaten aus diesem Mietvertrag für die Miethistorie. Antworte nur mit JSON." }
-          ];
+      const fullPrompt = systemPrompt + "\n\nExtrahiere die Mietdaten aus diesem Mietvertrag für die Miethistorie. Antworte nur mit JSON.";
 
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
+      const response = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 4096,
-          system: systemPrompt,
-          messages: [{ role: "user", content }]
+          image: base64Data,
+          mimeType: mediaType,
+          systemPrompt: fullPrompt
         })
       });
 
-      if (!response.ok) throw new Error(`API Fehler: ${response.status}`);
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || `API Fehler: ${response.status}`);
+      }
 
       const data = await response.json();
-      const textContent = data.content?.find(c => c.type === 'text')?.text || '';
+      const textContent = data.text || '';
       
       let jsonStr = textContent.trim();
       if (jsonStr.includes('```')) {
@@ -3200,31 +3186,25 @@ Wichtig:
 - typ: annuitaeten (Standard), tilgung, endfaellig, kfw, bauspar, privat, forward, sonstig`;
 
     try {
-      const content = isPDF 
-        ? [
-            { type: "document", source: { type: "base64", media_type: mediaType, data: base64Data } },
-            { type: "text", text: "Extrahiere alle Darlehen aus diesem Dokument. Antworte nur mit JSON." }
-          ]
-        : [
-            { type: "image", source: { type: "base64", media_type: mediaType, data: base64Data } },
-            { type: "text", text: "Extrahiere alle Darlehen aus diesem Dokument. Antworte nur mit JSON." }
-          ];
+      const fullPrompt = systemPrompt + "\n\nExtrahiere alle Darlehen aus diesem Dokument. Antworte nur mit JSON.";
 
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
+      const response = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 4096,
-          system: systemPrompt,
-          messages: [{ role: "user", content }]
+          image: base64Data,
+          mimeType: mediaType,
+          systemPrompt: fullPrompt
         })
       });
 
-      if (!response.ok) throw new Error(`API Fehler: ${response.status}`);
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || `API Fehler: ${response.status}`);
+      }
 
       const data = await response.json();
-      const textContent = data.content?.find(c => c.type === 'text')?.text || '';
+      const textContent = data.text || '';
       
       let jsonStr = textContent.trim();
       if (jsonStr.includes('```')) {
@@ -3570,16 +3550,23 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
             Felder zurücksetzen
           </button>
         </Acc>
-        <Acc icon={<IconAfa color="#f59e0b" />} title="Grundstück & AfA" sum={`AfA: ${fmt(c.afaGeb)}/Jahr`} open={sec === 'afa'} toggle={() => setSec(sec === 'afa' ? null : 'afa')} color="#f59e0b">
+        <Acc icon={<IconAfa color="#f59e0b" />} title="Grundstück & AfA" sum={`AfA: ${fmt(c.afaGeb + (s.degressiveAfa || 0))}/Jahr`} open={sec === 'afa'} toggle={() => setSec(sec === 'afa' ? null : 'afa')} color="#f59e0b">
           <Input label="Grundstücksgröße" value={s.grundstueckGroesse} onChange={v => set('grundstueckGroesse', v)} suffix="qm" />
           <Input label="Bodenrichtwert" value={s.bodenrichtwert} onChange={v => set('bodenrichtwert', v)} suffix="€/qm" />
           {s.typ === 'etw' && <Input label="TEA (WEG)" value={s.teileigentumsanteil} onChange={v => set('teileigentumsanteil', v)} suffix="/10.000" />}
           <div className="res"><span>Grundstückswert</span><span>{fmt(c.gwg)}</span></div>
           <div className="res"><span>./. Anteil</span><span>{fmt(c.ga)}</span></div>
           <hr />
-          <Input label="AfA-Satz" value={s.afaSatz} onChange={v => set('afaSatz', v)} suffix="%" step={0.5} />
+          <Input label="AfA-Satz (linear)" value={s.afaSatz} onChange={v => set('afaSatz', v)} suffix="%" step={0.5} />
           <div className="res hl"><span>AfA-Basis</span><span>{fmt(c.afaBasis)}</span></div>
-          <div className="res hl"><span>AfA p.a.</span><span>{fmt(c.afaGeb)}</span></div>
+          <div className="res hl"><span>Lineare AfA p.a.</span><span>{fmt(c.afaGeb)}</span></div>
+          <hr />
+          <div className="field-group-label">Degressive AfA (§7 Abs. 5a EStG)</div>
+          <p className="hint-small">Für Neubauten ab 2023: 5% p.a. vom Restwert, max. 5 Jahre, dann Wechsel zur linearen AfA</p>
+          <Input label="Degressive AfA" value={s.degressiveAfa} onChange={v => set('degressiveAfa', v)} suffix="€/Jahr" />
+          {(s.degressiveAfa > 0) && (
+            <div className="res hl"><span>Gesamt-AfA p.a.</span><span>{fmt(c.afaGeb + (s.degressiveAfa || 0))}</span></div>
+          )}
           <hr />
           <button className="btn-reset-section" onClick={() => setResetConfirm('afa')}>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -4569,7 +4556,8 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
                       grundstueckGroesse: 0,
                       bodenrichtwert: 0,
                       teileigentumsanteil: 0,
-                      afaSatz: 3
+                      afaSatz: 3,
+                      degressiveAfa: 0
                     }
                   });
                 } else if (resetConfirm === 'miete') {
@@ -5910,8 +5898,8 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
   const [autoSaveTimer, setAutoSaveTimer] = useState(null);
   const [showAutoSaved, setShowAutoSaved] = useState(false);
   const [validationErrors, setValidationErrors] = useState({});
-  const [toast, setToast] = useState(null); // { type: 'success'|'warning'|'error', message: string }
-  const [dashFilter, setDashFilter] = useState('alle'); // Filter für Dashboard
+  const [toast, setToast] = useState(null);
+  const [dashFilter, setDashFilter] = useState('alle');
 
   // Sync data to parent when changed
   useEffect(() => {
@@ -7453,7 +7441,6 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
   );
 }
 
-
 // ============================================================================
 // AUTH SCREENS & CLOUD COMPONENTS
 // ============================================================================
@@ -7702,4 +7689,3 @@ function AppContent() {
   if (!user) return <AuthScreen />;
   return <ImmoHubApp />;
 }
-
