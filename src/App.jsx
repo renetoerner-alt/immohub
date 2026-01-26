@@ -7009,7 +7009,11 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, cloudStatus
 
       <header className="hdr">
         <div className="hdr-in">
-          <div className="logo"><span className="logo-icon"><IconObjekt color="#6366f1" /></span><span className="logo-text"><span className="logo-immo">Immo</span><span className="logo-hub">Hub</span></span></div>
+          <div className="logo">
+            <span className="logo-icon"><IconObjekt color="#6366f1" /></span>
+            <span className="logo-text"><span className="logo-immo">Immo</span><span className="logo-hub">Hub</span></span>
+            {CloudStatusComponent && <CloudStatusComponent />}
+          </div>
           <div className="hdr-acts">
             {(history.length > 0 || redoHistory.length > 0) && (
               <div className="undo-redo-group">
@@ -7028,6 +7032,7 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, cloudStatus
                 {theme === 'dark' ? <IconSun color="#f59e0b" /> : <IconMoon color="#6366f1" />}
               </span>
             </button>
+            {UserMenuComponent && <UserMenuComponent />}
           </div>
         </div>
       </header>
