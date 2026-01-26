@@ -48,7 +48,7 @@ const supabase = {
         localStorage.setItem('sb_access_token', data.access_token);
         localStorage.setItem('sb_refresh_token', data.refresh_token);
         localStorage.setItem('sb_user', JSON.stringify(data.user));
-        return { data, error: null };
+        return { data: { user: data.user }, error: null };
       } catch (err) { return { data: null, error: { message: err.message } }; }
     },
     signOut: async () => {
@@ -64,57 +64,59 @@ const supabase = {
           headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY },
           body: JSON.stringify({ email }),
         });
+        if (res.ok) return { error: null };
         const data = await res.json();
-        if (data.error) return { error: { message: data.error_description || data.error } };
-        return { error: null };
+        return { error: { message: data.error_description || 'Fehler beim Zurücksetzen' } };
       } catch (err) { return { error: { message: err.message } }; }
     },
   },
   from: (table) => ({
-    select: (columns = '*') => ({
-      eq: (column, value) => ({
+    select: (cols = '*') => ({
+      eq: (col, val) => ({
         single: async () => {
-          const token = localStorage.getItem('sb_access_token');
           try {
-            const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${column}=eq.${value}&select=${columns}`, {
+            const token = localStorage.getItem('sb_access_token');
+            const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?select=${cols}&${col}=eq.${val}&limit=1`, {
               headers: { 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${token}` },
             });
             const data = await res.json();
             return { data: data[0] || null, error: null };
-          } catch (err) { return { data: null, error: { message: err.message } }; }
+          } catch (err) { return { data: null, error: err }; }
         },
       }),
     }),
-    insert: (data) => ({
+    insert: (rows) => ({
       select: () => ({
         single: async () => {
-          const token = localStorage.getItem('sb_access_token');
           try {
+            const token = localStorage.getItem('sb_access_token');
             const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${token}`, 'Prefer': 'return=representation' },
-              body: JSON.stringify(data),
+              body: JSON.stringify(rows),
             });
-            const result = await res.json();
-            return { data: Array.isArray(result) ? result[0] : result, error: null };
-          } catch (err) { return { data: null, error: { message: err.message } }; }
+            const data = await res.json();
+            if (!res.ok) return { data: null, error: { message: data.message || 'Insert failed' } };
+            return { data: Array.isArray(data) ? data[0] : data, error: null };
+          } catch (err) { return { data: null, error: err }; }
         },
       }),
     }),
-    update: (data) => ({
-      eq: (column, value) => ({
+    update: (updates) => ({
+      eq: (col, val) => ({
         select: () => ({
           single: async () => {
-            const token = localStorage.getItem('sb_access_token');
             try {
-              const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${column}=eq.${value}`, {
+              const token = localStorage.getItem('sb_access_token');
+              const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${col}=eq.${val}`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${token}`, 'Prefer': 'return=representation' },
-                body: JSON.stringify(data),
+                body: JSON.stringify(updates),
               });
-              const result = await res.json();
-              return { data: Array.isArray(result) ? result[0] : result, error: null };
-            } catch (err) { return { data: null, error: { message: err.message } }; }
+              const data = await res.json();
+              if (!res.ok) return { data: null, error: { message: data.message || 'Update failed' } };
+              return { data: Array.isArray(data) ? data[0] : data, error: null };
+            } catch (err) { return { data: null, error: err }; }
           },
         }),
       }),
@@ -122,9 +124,50 @@ const supabase = {
   }),
 };
 
-// Auth Context
+// ============================================================================
+// AUTH CONTEXT
+// ============================================================================
 const AuthContext = createContext(null);
-const useAuth = () => { const ctx = useContext(AuthContext); if (!ctx) throw new Error('useAuth must be used within AuthProvider'); return ctx; };
+const useAuth = () => useContext(AuthContext);
+
+const AuthProvider = ({ children }) => {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user || null);
+      setLoading(false);
+    });
+  }, []);
+
+  const signUp = async (email, password) => {
+    const { data, error } = await supabase.auth.signUp({ email, password });
+    if (data?.user) setUser(data.user);
+    return { data, error };
+  };
+
+  const signIn = async (email, password) => {
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (data?.user) setUser(data.user);
+    return { data, error };
+  };
+
+  const signOut = async () => {
+    await supabase.auth.signOut();
+    setUser(null);
+  };
+
+  const resetPassword = async (email) => {
+    return await supabase.auth.resetPasswordForEmail(email);
+  };
+
+  return (
+    <AuthContext.Provider value={{ user, loading, signUp, signIn, signOut, resetPassword }}>
+      {children}
+    </AuthContext.Provider>
+  );
+};
 
 // Formatierung
 const fmt = (v) => new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(v || 0);
@@ -731,7 +774,7 @@ const createEmpty = () => ({
   miethistorie: [], // Array von { datum, mieteAlt, mieteNeu, grund }
   erinnerungen: [], // Array von { datum, titel, beschreibung, erledigt }
   stammdaten: {
-    name: '', adresse: '', typ: 'etw', bundesland: 'hessen',
+    name: '', adresse: '', projekt: '', typ: 'etw', bundesland: 'hessen',
     objektstatus: 'neubau',
     nutzung: 'vermietet',
     eigentuemer: '',
@@ -777,8 +820,8 @@ const createEmpty = () => ({
 });
 
 const STORAGE_KEY = 'immocalc_v4';
-const loadLocal = () => { try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; } catch { return []; } };
-const saveLocal = (d) => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); } catch {} };
+const load = () => { try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; } catch { return []; } };
+const save = (d) => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); } catch {} };
 
 const useCalc = (s) => useMemo(() => {
   if (!s) return {};
@@ -1524,6 +1567,11 @@ WICHTIG - DARLEHEN:
 - Jedes Darlehen hat: name, institut, betrag, zinssatz, tilgung, monatsrate, laufzeit, zinsbindungJahre, etc.
 - Bei einer Darlehensübersicht: JEDES Darlehen als separates Objekt im Array!
 
+WICHTIG - WERBUNGSKOSTEN:
+- Werbungskosten sind Kosten die steuerlich absetzbar sind (z.B. Hausgeld, Verwaltungskosten, Reparaturen, Versicherungen)
+- Erfasse sie im Array "werbungskosten" mit Jahr, Bezeichnung und Betrag
+- Beispiele: Hausgeld, Verwaltungskosten, Instandhaltungsrücklage, Versicherungen, Kontoführung, Fahrtkosten
+
 Antworte NUR mit einem validen JSON-Objekt. Keine Erklärungen, kein Markdown.
 
 Format:
@@ -1582,6 +1630,15 @@ Format:
       "zinsbindungJahre": 10,
       "zinsbindungEnde": "YYYY-MM-DD",
       "restschuld": 180000
+    }],
+    "werbungskosten": [{
+      "jahr": 2024,
+      "bez": "Hausgeld",
+      "betrag": 3600
+    }, {
+      "jahr": 2024,
+      "bez": "Verwaltungskosten",
+      "betrag": 300
     }],
     "gefundeneFelder": ["liste", "der", "extrahierten", "felder"]
   }],
@@ -1829,7 +1886,7 @@ Wichtig:
   };
 
   const handleImport = (immoData) => {
-    const { gefundeneFelder, zuPruefen, quellenDokument, dokumentTyp, lfdNr, darlehen, ...cleanData } = immoData;
+    const { gefundeneFelder, zuPruefen, quellenDokument, dokumentTyp, lfdNr, darlehen, werbungskosten, ...cleanData } = immoData;
     
     // Darlehen separat verarbeiten (nicht in stammdaten)
     const darlehenArray = Array.isArray(darlehen) ? darlehen.map(d => ({
@@ -1851,11 +1908,27 @@ Wichtig:
       restschuld: d.restschuld || 0
     })) : [];
     
+    // Werbungskosten nach Jahr gruppieren für steuerJahre
+    const steuerJahre = {};
+    if (Array.isArray(werbungskosten) && werbungskosten.length > 0) {
+      werbungskosten.forEach(wk => {
+        const jahr = wk.jahr || new Date().getFullYear();
+        if (!steuerJahre[jahr]) {
+          steuerJahre[jahr] = { wk: [], miet: 0, nkVor: 0, nkAbr: 0 };
+        }
+        steuerJahre[jahr].wk.push({
+          bez: wk.bez || 'Werbungskosten',
+          betrag: wk.betrag || 0
+        });
+      });
+    }
+    
     const newImmo = {
       ...createEmpty(),
       importiert: true,
       zuPruefen: zuPruefen || gefundeneFelder || [],
       darlehen: darlehenArray,
+      steuerJahre: Object.keys(steuerJahre).length > 0 ? steuerJahre : {},
       stammdaten: {
         ...createEmpty().stammdaten,
         ...cleanData,
@@ -3309,6 +3382,7 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
   const [mhistOpen, setMhistOpen] = useState(false);
   const [mhistImportModal, setMhistImportModal] = useState(false);
   const [archiveConfirm, setArchiveConfirm] = useState(false);
+  const [resetConfirm, setResetConfirm] = useState(null); // 'objekt' | 'kaufpreis' | 'miete' | etc.
   const s = p.stammdaten;
   const zuPruefen = p.zuPruefen || [];
   const istImportiert = p.importiert && zuPruefen.length > 0;
@@ -3432,10 +3506,27 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
         <div className="kpi"><span>AfA p.a.</span><b>{fmt(c.afaGes)}</b></div>
       </div>
       <div className="accs">
-        <Acc icon={<IconObjekt color="#6366f1" />} title="Objekt" sum={s.name || 'Name eingeben...'} open={sec === 'obj'} toggle={() => setSec(sec === 'obj' ? null : 'obj')} color="#6366f1">
-          <Input label="Name *" value={s.name} onChange={v => set('name', v)} type="text" ph="z.B. ETW Marburg" error={validationErrors.name} />
+        <Acc icon={<IconObjekt color="#6366f1" />} title="Objekt" sum={s.name || 'Name eingeben...'} open={sec === 'obj'} toggle={() => setSec(sec === 'obj' ? null : 'obj')} color="#6366f1" onImport={onOpenImport}>
+          <div className="field-with-btn">
+            <Input label="Name *" value={s.name} onChange={v => set('name', v)} type="text" ph="z.B. ETW Marburg" error={validationErrors.name} />
+            <button 
+              className="auto-gen-btn" 
+              onClick={() => {
+                const typ = TYP_LABELS[s.typ] || s.typ?.toUpperCase() || '';
+                const parts = [s.projekt, typ, s.wohnungsNr].filter(Boolean);
+                if (parts.length > 0) set('name', parts.join(' '));
+              }}
+              title="Name automatisch generieren aus Projekt, Typ und Wohnungs-Nr."
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6l2.1 2.1M5.6 18.4l2.1-2.1m8.6-8.6l2.1-2.1"/>
+              </svg>
+              Auto
+            </button>
+          </div>
           <Input label="Eigentümer" value={s.eigentuemer} onChange={v => set('eigentuemer', v)} type="text" ph="z.B. Max Mustermann" />
           <Input label="Adresse" value={s.adresse} onChange={v => set('adresse', v)} type="text" ph="Straße, PLZ Ort" />
+          <Input label="Projekt" value={s.projekt} onChange={v => set('projekt', v)} type="text" ph="z.B. Neubauprojekt Marburg" />
           <Select label="Typ" value={s.typ} onChange={v => set('typ', v)} options={[{ v: 'etw', l: 'ETW' }, { v: 'mfh', l: 'MFH' }, { v: 'efh', l: 'EFH' }, { v: 'gewerbe', l: 'Gewerbe' }, { v: 'grundstueck', l: 'Grundstück' }]} />
           <Select label="Neubau/Bestand" value={s.objektstatus} onChange={v => set('objektstatus', v)} options={[{ v: 'neubau', l: 'Neubau' }, { v: 'bestand', l: 'Bestand' }]} />
           <Select label="Nutzung" value={s.nutzung} onChange={v => set('nutzung', v)} options={[{ v: 'vermietet', l: 'Vermietet' }, { v: 'eigengenutzt', l: 'Eigengenutzt' }]} />
@@ -3447,9 +3538,14 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
             <Input label="Etage" value={s.etage} onChange={v => set('etage', v)} type="text" ph="z.B. 3. OG" />
           </div>
           <hr />
-          <button className="btn-import-inline" onClick={onOpenImport}>
-            <span className="btn-import-icon"><IconUpload color="#6366f1" /></span>
-            Daten aus Dokument importieren
+          <button 
+            className="btn-reset-section" 
+            onClick={() => setResetConfirm('objekt')}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+            </svg>
+            Felder zurücksetzen
           </button>
         </Acc>
         <Acc icon={<IconKaufpreis color="#10b981" />} title="Kaufpreis und Verkehrswert" sum={`${fmt(c.kp)} + ${fmt(c.nk)} NK`} open={sec === 'kp'} toggle={() => setSec(sec === 'kp' ? null : 'kp')} color="#10b981">
@@ -3466,6 +3562,13 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
           <div className="field-group-label">Aktueller Verkehrswert</div>
           <Input label="Verkehrswert" value={s.verkehrswert} onChange={v => set('verkehrswert', v)} suffix="€" error={validationErrors.verkehrswert} />
           <Input label="Bewertungsdatum" value={s.verkehrswertDatum} onChange={v => set('verkehrswertDatum', v)} type="date" />
+          <hr />
+          <button className="btn-reset-section" onClick={() => setResetConfirm('kaufpreis')}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+            </svg>
+            Felder zurücksetzen
+          </button>
         </Acc>
         <Acc icon={<IconAfa color="#f59e0b" />} title="Grundstück & AfA" sum={`AfA: ${fmt(c.afaGeb)}/Jahr`} open={sec === 'afa'} toggle={() => setSec(sec === 'afa' ? null : 'afa')} color="#f59e0b">
           <Input label="Grundstücksgröße" value={s.grundstueckGroesse} onChange={v => set('grundstueckGroesse', v)} suffix="qm" />
@@ -3477,6 +3580,13 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
           <Input label="AfA-Satz" value={s.afaSatz} onChange={v => set('afaSatz', v)} suffix="%" step={0.5} />
           <div className="res hl"><span>AfA-Basis</span><span>{fmt(c.afaBasis)}</span></div>
           <div className="res hl"><span>AfA p.a.</span><span>{fmt(c.afaGeb)}</span></div>
+          <hr />
+          <button className="btn-reset-section" onClick={() => setResetConfirm('afa')}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+            </svg>
+            Felder zurücksetzen
+          </button>
         </Acc>
         <Acc 
           icon={<IconMiete color={s.nutzung === 'eigengenutzt' ? 'var(--text-dim)' : '#ec4899'} />} 
@@ -3737,6 +3847,13 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
               <button className="btn-add" onClick={() => upd({ ...p, miethistorie: [...(p.miethistorie || []), { von: '', bis: '', kaltmiete: 0, nebenkosten: 0, stellplatz: 0, sonstiges: 0, grund: '' }] })}>+ Mietperiode hinzufügen</button>
             </div>
           )}
+          <hr />
+          <button className="btn-reset-section" onClick={() => setResetConfirm('miete')}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+            </svg>
+            Felder zurücksetzen
+          </button>
         </Acc>
         <Acc icon={<IconFinanz color="#3b82f6" />} title="Finanzierung" sum={(() => {
           const darlehen = p.darlehen || [];
@@ -4004,6 +4121,13 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
             }, 0);
             return <div className="res hl"><span>Gesamt FK / Monatsrate</span><span>{fmt(sumBetrag)} / {fmt(sumMonat)}</span></div>;
           })()}
+          <hr />
+          <button className="btn-reset-section" onClick={() => setResetConfirm('finanzierung')}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+            </svg>
+            Felder zurücksetzen
+          </button>
         </Acc>
         <Acc icon={<IconSonder color="#8b5cf6" />} title="Sonderausstattung" sum={s.sonderausstattung.length > 0 ? `${s.sonderausstattung.length}x, ${fmt(c.saSumme)}` : 'Keine'} open={sec === 'sa'} toggle={() => setSec(sec === 'sa' ? null : 'sa')} color="#8b5cf6">
           <p className="hint">z.B. Küche – 10% AfA über 10 Jahre</p>
@@ -4016,6 +4140,13 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
           ))}
           <button className="btn-add" onClick={addSA}>+ Hinzufügen</button>
           {c.saSumme > 0 && <div className="res hl"><span>AfA SA p.a.</span><span>{fmt(c.afaSA)}</span></div>}
+          <hr />
+          <button className="btn-reset-section" onClick={() => setResetConfirm('sonderausstattung')}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+            </svg>
+            Felder zurücksetzen
+          </button>
         </Acc>
         {beteiligte.length > 0 && (
           <Acc icon={<IconPerson color="#8b5cf6" />} title="Beteiligte" sum={(() => {
@@ -4380,6 +4511,116 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
           darlehen={tilgungsplanDarlehen}
           onClose={() => setTilgungsplanDarlehen(null)}
         />
+      )}
+      
+      {/* Bestätigungsdialog für Felder zurücksetzen */}
+      {resetConfirm && (
+        <div className="modal-bg" onClick={() => setResetConfirm(null)}>
+          <div className="reset-confirm-modal" onClick={e => e.stopPropagation()}>
+            <div className="reset-confirm-icon">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2">
+                <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+              </svg>
+            </div>
+            <h3>Felder zurücksetzen?</h3>
+            <p>Alle Felder in diesem Abschnitt werden geleert. Diese Aktion kann nicht rückgängig gemacht werden.</p>
+            <div className="reset-confirm-buttons">
+              <button className="btn-cancel" onClick={() => setResetConfirm(null)}>Abbrechen</button>
+              <button className="btn-reset" onClick={() => {
+                if (resetConfirm === 'objekt') {
+                  upd({
+                    ...p,
+                    stammdaten: {
+                      ...s,
+                      name: '',
+                      eigentuemer: '',
+                      adresse: '',
+                      projekt: '',
+                      typ: 'etw',
+                      objektstatus: 'neubau',
+                      nutzung: 'vermietet',
+                      bundesland: 'hessen',
+                      kaufdatum: '',
+                      baujahr: 0,
+                      wohnungsNr: '',
+                      etage: ''
+                    }
+                  });
+                } else if (resetConfirm === 'kaufpreis') {
+                  upd({
+                    ...p,
+                    stammdaten: {
+                      ...s,
+                      kaufpreisImmobilie: 0,
+                      kaufpreisStellplatz: 0,
+                      maklerProvision: 0,
+                      mehrkosten: 0,
+                      grunderwerbsteuer: 0,
+                      notarkosten: 0,
+                      verkehrswert: 0,
+                      verkehrswertDatum: ''
+                    }
+                  });
+                } else if (resetConfirm === 'afa') {
+                  upd({
+                    ...p,
+                    stammdaten: {
+                      ...s,
+                      grundstueckGroesse: 0,
+                      bodenrichtwert: 0,
+                      teileigentumsanteil: 0,
+                      afaSatz: 3
+                    }
+                  });
+                } else if (resetConfirm === 'miete') {
+                  upd({
+                    ...p,
+                    miethistorie: [],
+                    stammdaten: {
+                      ...s,
+                      mieterName: '',
+                      mietstatusAktiv: true,
+                      mietbeginn: '',
+                      mietende: '',
+                      kaltmiete: 0,
+                      nebenkostenVorauszahlung: 0,
+                      mieteStellplatz: 0,
+                      mieteSonderausstattung: 0,
+                      kaution: 0,
+                      kautionErhalten: false,
+                      kautionZurueckgezahlt: false
+                    }
+                  });
+                } else if (resetConfirm === 'finanzierung') {
+                  upd({
+                    ...p,
+                    darlehen: [],
+                    stammdaten: {
+                      ...s,
+                      eigenkapitalAnteil: 20,
+                      eigenkapitalBetrag: 0,
+                      eigenkapitalHerkunft: 'ersparnis',
+                      eigenleistung: 0,
+                      kfwZuschuss: 0,
+                      kfwProgramm: '',
+                      bafaFoerderung: 0,
+                      landesFoerderung: 0
+                    }
+                  });
+                } else if (resetConfirm === 'sonderausstattung') {
+                  upd({
+                    ...p,
+                    stammdaten: {
+                      ...s,
+                      sonderausstattung: []
+                    }
+                  });
+                }
+                setResetConfirm(null);
+              }}>Zurücksetzen</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -5650,8 +5891,8 @@ const OnboardingTour = ({ onComplete }) => {
   );
 };
 
-// Haupt-App (Kern)
-function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, cloudStatus, CloudStatusComponent, UserMenuComponent }) {
+// Haupt-App (Core ohne Auth)
+function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuComponent, CloudStatusComponent }) {
   const [saved, setSaved] = useState(initialData || []);
   const [curr, setCurr] = useState(null);
   const [tab, setTab] = useState('dash');
@@ -5669,13 +5910,22 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, cloudStatus
   const [autoSaveTimer, setAutoSaveTimer] = useState(null);
   const [showAutoSaved, setShowAutoSaved] = useState(false);
   const [validationErrors, setValidationErrors] = useState({});
-  const [toast, setToast] = useState(null);
-  const [dashFilter, setDashFilter] = useState('alle');
+  const [toast, setToast] = useState(null); // { type: 'success'|'warning'|'error', message: string }
+  const [dashFilter, setDashFilter] = useState('alle'); // Filter für Dashboard
 
-  // Sync zu Parent
+  // Sync data to parent when changed
   useEffect(() => {
-    if (onDataChange) onDataChange({ immobilien: saved, beteiligte });
+    if (onDataChange) {
+      onDataChange(saved, beteiligte);
+    }
   }, [saved, beteiligte]);
+
+  // Update from parent
+  useEffect(() => {
+    if (initialData && JSON.stringify(initialData) !== JSON.stringify(saved)) {
+      setSaved(initialData);
+    }
+  }, [initialData]);
 
   // Toast automatisch ausblenden
   useEffect(() => {
@@ -6078,6 +6328,21 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, cloudStatus
         .hint-small{font-size:10px;color:var(--text-dim);margin:-6px 0 10px 0;font-style:italic}
         .foerderung-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
         .field-row-2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+        .field-with-btn{display:flex;gap:6px;align-items:flex-end}
+        .field-with-btn .field{flex:1}
+        .auto-gen-btn{display:flex;align-items:center;justify-content:center;padding:6px 8px;background:transparent;border:1px solid var(--border);border-radius:5px;color:var(--text-dim);font-size:10px;cursor:pointer;white-space:nowrap;margin-bottom:10px;height:34px;opacity:0.6;transition:all 0.15s}
+        .auto-gen-btn:hover{opacity:1;color:#6366f1;border-color:#6366f1}
+        .btn-reset-section{display:flex;align-items:center;gap:6px;padding:6px 10px;background:transparent;border:none;color:var(--text-dim);font-size:10px;cursor:pointer;opacity:0.5;transition:all 0.15s;margin-top:4px}
+        .btn-reset-section:hover{opacity:1;color:#ef4444}
+        .reset-confirm-modal{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:24px;max-width:360px;text-align:center}
+        .reset-confirm-icon{width:48px;height:48px;margin:0 auto 16px;background:rgba(239,68,68,0.1);border-radius:50%;display:flex;align-items:center;justify-content:center}
+        .reset-confirm-modal h3{font-size:16px;color:var(--text);margin:0 0 8px}
+        .reset-confirm-modal p{font-size:13px;color:var(--text-muted);margin:0 0 20px;line-height:1.5}
+        .reset-confirm-buttons{display:flex;gap:10px;justify-content:center}
+        .reset-confirm-buttons .btn-cancel{padding:8px 16px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;cursor:pointer}
+        .reset-confirm-buttons .btn-cancel:hover{background:var(--border-hover)}
+        .reset-confirm-buttons .btn-reset{padding:8px 16px;background:#ef4444;border:none;border-radius:6px;color:#fff;font-size:13px;cursor:pointer}
+        .reset-confirm-buttons .btn-reset:hover{background:#dc2626}
         
         .sa-row,.wk-row{display:flex;gap:6px;align-items:center;margin-bottom:6px}
         .sa-row input,.wk-row input{padding:7px 9px;background:var(--bg-input);border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:11px}
@@ -7188,295 +7453,239 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, cloudStatus
   );
 }
 
+
 // ============================================================================
-// AUTH PROVIDER & WRAPPER
+// AUTH SCREENS & CLOUD COMPONENTS
 // ============================================================================
-const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [portfolio, setPortfolio] = useState(null);
-  const [showMigration, setShowMigration] = useState(false);
-  const [localData, setLocalData] = useState(null);
 
-  useEffect(() => { checkSession(); }, []);
-
-  const checkSession = async () => {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (session?.user) {
-      setUser(session.user);
-      await loadPortfolio(session.user.id, session.user.email);
-    }
-    setLoading(false);
-  };
-
-  const loadPortfolio = async (userId, userEmail) => {
-    const { data } = await supabase.from('portfolios').select('*').eq('user_id', userId).single();
-    if (data) {
-      setPortfolio(data);
-      if (userEmail === FIRST_USER_EMAIL) {
-        const local = loadLocal();
-        if (local.length > 0 && (!data.data?.immobilien || data.data.immobilien.length === 0)) {
-          setLocalData(local);
-          setShowMigration(true);
-        }
-      }
-    } else {
-      const { data: newPortfolio } = await supabase.from('portfolios')
-        .insert({ user_id: userId, name: 'Mein Portfolio', data: { immobilien: [], beteiligte: [] } })
-        .select().single();
-      setPortfolio(newPortfolio);
-      if (userEmail === FIRST_USER_EMAIL) {
-        const local = loadLocal();
-        if (local.length > 0) { setLocalData(local); setShowMigration(true); }
-      }
+// Cloud Status Component
+const CloudStatus = ({ status }) => {
+  const getDisplay = () => {
+    switch (status) {
+      case "saving": return { text: "Speichert...", color: "#f59e0b", icon: "⟳" };
+      case "saved": return { text: "Gespeichert", color: "#22c55e", icon: "✓" };
+      case "error": return { text: "Fehler", color: "#ef4444", icon: "✗" };
+      default: return { text: "", color: "transparent", icon: "" };
     }
   };
-
-  const migrateData = async () => {
-    if (!localData || !portfolio) return;
-    const beteiligte = (() => { try { return JSON.parse(localStorage.getItem('immoBeteiligte')) || []; } catch { return []; } })();
-    await savePortfolio({ immobilien: localData, beteiligte });
-    localStorage.removeItem(STORAGE_KEY);
-    localStorage.removeItem('immoBeteiligte');
-    setShowMigration(false);
-    window.location.reload();
-  };
-
-  const savePortfolio = async (portfolioData) => {
-    if (!portfolio?.id) return { error: { message: 'Kein Portfolio' } };
-    const { data, error } = await supabase.from('portfolios').update({ data: portfolioData }).eq('id', portfolio.id).select().single();
-    if (data) setPortfolio(data);
-    return { data, error };
-  };
-
-  const signUp = async (email, password, displayName) => {
-    const { data, error } = await supabase.auth.signUp({ email, password });
-    if (error) return { error };
-    if (data?.user) {
-      const token = localStorage.getItem('sb_access_token');
-      if (!token) await supabase.auth.signInWithPassword({ email, password });
-      setUser(data.user);
-      await supabase.from('portfolios').insert({ user_id: data.user.id, name: displayName || 'Mein Portfolio', data: { immobilien: [], beteiligte: [] } }).select().single();
-      await loadPortfolio(data.user.id, data.user.email);
-    }
-    return { data, error: null };
-  };
-
-  const signIn = async (email, password) => {
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) return { error };
-    if (data?.user) { setUser(data.user); await loadPortfolio(data.user.id, data.user.email); }
-    return { data, error: null };
-  };
-
-  const signOut = async () => { await supabase.auth.signOut(); setUser(null); setPortfolio(null); };
-  const resetPassword = async (email) => await supabase.auth.resetPasswordForEmail(email);
-
+  const d = getDisplay();
   return (
-    <AuthContext.Provider value={{ user, loading, portfolio, signUp, signIn, signOut, resetPassword, savePortfolio, showMigration, localData, migrateData, skipMigration: () => setShowMigration(false) }}>
-      {children}
-    </AuthContext.Provider>
+    <span style={{ marginLeft: "12px", fontSize: "11px", color: d.color, display: "flex", alignItems: "center", gap: "4px" }}>
+      <span style={{ fontSize: "13px" }}>{d.icon}</span> {d.text}
+    </span>
   );
 };
 
-// Auth Screen
-const AuthScreen = () => {
-  const [mode, setMode] = useState('login');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [passwordConfirm, setPasswordConfirm] = useState('');
-  const [displayName, setDisplayName] = useState('');
-  const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [showPw, setShowPw] = useState(false);
-  const { signIn, signUp, resetPassword } = useAuth();
-
-  const handleSubmit = async () => {
-    setError(''); setSuccess(''); setLoading(true);
-    try {
-      if (mode === 'login') {
-        const { error } = await signIn(email, password);
-        if (error) setError(error.message);
-      } else if (mode === 'register') {
-        if (password !== passwordConfirm) { setError('Passwörter stimmen nicht überein'); setLoading(false); return; }
-        if (password.length < 6) { setError('Passwort muss mindestens 6 Zeichen lang sein'); setLoading(false); return; }
-        const result = await signUp(email, password, displayName);
-        if (result.error) setError(result.error.message);
-      } else {
-        const { error } = await resetPassword(email);
-        if (error) setError(error.message); else setSuccess('E-Mail gesendet');
-      }
-    } catch (err) { setError(err.message); }
-    setLoading(false);
-  };
-
+// User Menu Component
+const UserMenu = ({ user, onSignOut }) => {
+  const [open, setOpen] = useState(false);
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg, #09090b 0%, #18181b 100%)', padding: 20, fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif' }}>
-      <div style={{ width: '100%', maxWidth: 400, background: '#18181b', border: '1px solid #27272a', borderRadius: 16, overflow: 'hidden' }}>
-        <div style={{ textAlign: 'center', padding: '32px 24px 24px', background: 'linear-gradient(180deg, rgba(99,102,241,0.1) 0%, transparent 100%)' }}>
-          <div style={{ width: 72, height: 72, margin: '0 auto 16px', background: 'rgba(99,102,241,0.15)', borderRadius: 16, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="1.5"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+    <div style={{ position: "relative" }}>
+      <button
+        onClick={() => setOpen(!open)}
+        style={{
+          display: "flex", alignItems: "center", gap: "8px", padding: "6px 12px",
+          background: "var(--bg-input)", border: "1px solid var(--border)", borderRadius: "8px",
+          color: "var(--text)", fontSize: "13px", cursor: "pointer"
+        }}
+      >
+        <span style={{
+          width: "28px", height: "28px", borderRadius: "50%", background: "#6366f1",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          color: "#fff", fontWeight: "600", fontSize: "12px"
+        }}>
+          {user?.email?.[0]?.toUpperCase() || "?"}
+        </span>
+        <span style={{ maxWidth: "120px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {user?.email || "Benutzer"}
+        </span>
+        <span style={{ fontSize: "10px" }}>▼</span>
+      </button>
+      {open && (
+        <div style={{
+          position: "absolute", top: "100%", right: 0, marginTop: "4px",
+          background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: "8px",
+          padding: "8px", minWidth: "160px", zIndex: 1000, boxShadow: "0 4px 12px rgba(0,0,0,0.3)"
+        }}>
+          <div style={{ padding: "8px", fontSize: "12px", color: "var(--text-muted)", borderBottom: "1px solid var(--border)" }}>
+            {user?.email}
           </div>
-          <h1 style={{ fontSize: 24, fontWeight: 700, color: '#fafafa', margin: '0 0 4px' }}>ImmoHub</h1>
-          <p style={{ fontSize: 14, color: '#71717a', margin: 0 }}>Immobilien-Portfolio verwalten</p>
-        </div>
-        <div style={{ padding: 24 }}>
-          <h2 style={{ fontSize: 18, fontWeight: 600, color: '#fafafa', margin: '0 0 20px', textAlign: 'center' }}>
-            {mode === 'login' ? 'Anmelden' : mode === 'register' ? 'Konto erstellen' : 'Passwort zurücksetzen'}
-          </h2>
-          {error && <div style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#f87171', padding: 12, borderRadius: 8, fontSize: 13, marginBottom: 16 }}>{error}</div>}
-          {success && <div style={{ background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.3)', color: '#4ade80', padding: 12, borderRadius: 8, fontSize: 13, marginBottom: 16 }}>{success}</div>}
-          {mode === 'register' && (
-            <div style={{ marginBottom: 16 }}>
-              <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#a1a1aa', marginBottom: 6 }}>Anzeigename</label>
-              <input type="text" value={displayName} onChange={e => setDisplayName(e.target.value)} placeholder="z.B. Max Mustermann" style={{ width: '100%', padding: '12px 14px', background: '#27272a', border: '1px solid #3f3f46', borderRadius: 8, color: '#fafafa', fontSize: 14 }} />
-            </div>
-          )}
-          <div style={{ marginBottom: 16 }}>
-            <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#a1a1aa', marginBottom: 6 }}>E-Mail</label>
-            <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="name@beispiel.de" style={{ width: '100%', padding: '12px 14px', background: '#27272a', border: '1px solid #3f3f46', borderRadius: 8, color: '#fafafa', fontSize: 14 }} />
-          </div>
-          {mode !== 'reset' && (
-            <div style={{ marginBottom: 16 }}>
-              <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#a1a1aa', marginBottom: 6 }}>Passwort</label>
-              <div style={{ position: 'relative' }}>
-                <input type={showPw ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" style={{ width: '100%', padding: '12px 44px 12px 14px', background: '#27272a', border: '1px solid #3f3f46', borderRadius: 8, color: '#fafafa', fontSize: 14 }} />
-                <button type="button" onClick={() => setShowPw(!showPw)} style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', width: 32, height: 32, background: 'transparent', border: 'none', color: '#71717a', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  {showPw ? '🙈' : '👁️'}
-                </button>
-              </div>
-            </div>
-          )}
-          {mode === 'register' && (
-            <div style={{ marginBottom: 16 }}>
-              <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#a1a1aa', marginBottom: 6 }}>Passwort bestätigen</label>
-              <input type="password" value={passwordConfirm} onChange={e => setPasswordConfirm(e.target.value)} placeholder="••••••••" style={{ width: '100%', padding: '12px 14px', background: '#27272a', border: '1px solid #3f3f46', borderRadius: 8, color: '#fafafa', fontSize: 14 }} />
-            </div>
-          )}
-          <button type="button" onClick={handleSubmit} disabled={loading} style={{ width: '100%', padding: 12, background: '#6366f1', border: 'none', borderRadius: 8, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer', opacity: loading ? 0.7 : 1 }}>
-            {loading ? '...' : mode === 'login' ? 'Anmelden' : mode === 'register' ? 'Registrieren' : 'Link senden'}
+          <button
+            onClick={() => { setOpen(false); onSignOut(); }}
+            style={{
+              width: "100%", padding: "10px", marginTop: "4px", background: "transparent",
+              border: "none", color: "#ef4444", fontSize: "13px", cursor: "pointer",
+              textAlign: "left", borderRadius: "4px"
+            }}
+            onMouseOver={(e) => e.target.style.background = "rgba(239,68,68,0.1)"}
+            onMouseOut={(e) => e.target.style.background = "transparent"}
+          >
+            Abmelden
           </button>
-          {mode === 'login' && (
-            <>
-              <button type="button" onClick={() => { setMode('reset'); setError(''); }} style={{ width: '100%', padding: 8, background: 'none', border: 'none', color: '#6366f1', fontSize: 13, cursor: 'pointer', marginTop: 8 }}>Passwort vergessen?</button>
-              <div style={{ display: 'flex', alignItems: 'center', margin: '20px 0', gap: 12 }}>
-                <div style={{ flex: 1, height: 1, background: '#27272a' }} />
-                <span style={{ fontSize: 12, color: '#52525b' }}>oder</span>
-                <div style={{ flex: 1, height: 1, background: '#27272a' }} />
-              </div>
-              <button type="button" onClick={() => { setMode('register'); setError(''); }} style={{ width: '100%', padding: 12, background: 'transparent', border: '1px solid #3f3f46', borderRadius: 8, color: '#fafafa', fontSize: 14, fontWeight: 500, cursor: 'pointer' }}>Neues Konto erstellen</button>
-            </>
-          )}
-          {(mode === 'register' || mode === 'reset') && (
-            <button type="button" onClick={() => { setMode('login'); setError(''); setSuccess(''); }} style={{ width: '100%', padding: 8, background: 'none', border: 'none', color: '#6366f1', fontSize: 13, cursor: 'pointer', marginTop: 8 }}>← Zurück zur Anmeldung</button>
-          )}
         </div>
-        <div style={{ padding: '16px 24px', borderTop: '1px solid #27272a', textAlign: 'center' }}>
-          <p style={{ fontSize: 12, color: '#52525b', margin: 0 }}>Daten werden sicher in der Cloud gespeichert</p>
-        </div>
-      </div>
+      )}
     </div>
   );
 };
 
 // Loading Screen
 const LoadingScreen = () => (
-  <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#09090b', fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif' }}>
-    <div style={{ textAlign: 'center' }}>
-      <div style={{ width: 80, height: 80, margin: '0 auto 24px', background: 'rgba(99,102,241,0.15)', borderRadius: 20, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="1.5"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-      </div>
-      <div style={{ width: 32, height: 32, border: '3px solid #27272a', borderTopColor: '#6366f1', borderRadius: '50%', animation: 'spin 0.8s linear infinite', margin: '0 auto 16px' }} />
-      <p style={{ color: '#71717a', fontSize: 14 }}>ImmoHub wird geladen...</p>
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+  <div style={{
+    height: "100vh", display: "flex", alignItems: "center", justifyContent: "center",
+    background: "#0a0a0f", color: "#fff"
+  }}>
+    <div style={{ textAlign: "center" }}>
+      <div style={{ fontSize: "32px", marginBottom: "16px" }}>🏠</div>
+      <div style={{ fontSize: "14px", color: "#888" }}>Laden...</div>
     </div>
   </div>
 );
 
-// Migration Dialog
-const MigrationDialog = ({ count, onMigrate, onSkip }) => (
-  <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
-    <div style={{ background: '#18181b', border: '1px solid #27272a', borderRadius: 16, padding: 32, maxWidth: 400, textAlign: 'center' }}>
-      <div style={{ fontSize: 48, marginBottom: 16 }}>📦</div>
-      <h2 style={{ color: '#fafafa', fontSize: 20, marginBottom: 12 }}>Lokale Daten gefunden!</h2>
-      <p style={{ color: '#a1a1aa', fontSize: 14, marginBottom: 24 }}>Es wurden <strong style={{ color: '#fafafa' }}>{count} Immobilien</strong> in deinem Browser gefunden. Möchtest du diese in dein Cloud-Konto übernehmen?</p>
-      <div style={{ display: 'flex', gap: 12 }}>
-        <button onClick={onSkip} style={{ flex: 1, padding: 12, background: '#27272a', border: '1px solid #3f3f46', borderRadius: 8, color: '#fafafa', fontSize: 14, cursor: 'pointer' }}>Nein, neu starten</button>
-        <button onClick={onMigrate} style={{ flex: 1, padding: 12, background: '#6366f1', border: 'none', borderRadius: 8, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>Ja, übernehmen</button>
-      </div>
-    </div>
-  </div>
-);
+// Auth Screen (Login/Register)
+const AuthScreen = () => {
+  const { signIn, signUp, resetPassword } = useAuth();
+  const [mode, setMode] = useState("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPw, setShowPw] = useState(false);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState("");
 
-// User Header für Cloud Status
-const CloudStatus = ({ status }) => (
-  <span style={{ fontSize: 12, marginLeft: 12, color: status === 'saving' ? '#f59e0b' : status === 'saved' ? '#22c55e' : '#ef4444' }}>
-    {status === 'saving' ? '⟳ Speichert...' : status === 'saved' ? '✓ Gespeichert' : '✗ Fehler'}
-  </span>
-);
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError("");
+    setMessage("");
+    setLoading(true);
+    if (mode === "reset") {
+      const { error } = await resetPassword(email);
+      setLoading(false);
+      if (error) setError(error.message);
+      else setMessage("E-Mail zum Zurücksetzen wurde gesendet!");
+      return;
+    }
+    const { error } = mode === "login" ? await signIn(email, password) : await signUp(email, password);
+    setLoading(false);
+    if (error) setError(error.message);
+    else if (mode === "register") setMessage("Registrierung erfolgreich! Du kannst dich jetzt anmelden.");
+  };
 
-const UserMenu = ({ onLogout }) => {
-  const { user } = useAuth();
-  const [open, setOpen] = useState(false);
   return (
-    <div style={{ position: 'relative' }}>
-      <button onClick={() => setOpen(!open)} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 8, cursor: 'pointer', color: 'var(--text)' }}>
-        <div style={{ width: 28, height: 28, background: '#6366f1', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 12, fontWeight: 600 }}>{(user?.email?.[0] || 'U').toUpperCase()}</div>
-        <span style={{ fontSize: 12, color: 'var(--text-muted)', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user?.email}</span>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="6 9 12 15 18 9"/></svg>
-      </button>
-      {open && (
-        <>
-          <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 99 }} />
-          <div style={{ position: 'absolute', top: 'calc(100% + 8px)', right: 0, minWidth: 200, background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 10, boxShadow: '0 10px 40px rgba(0,0,0,0.3)', zIndex: 100, overflow: 'hidden' }}>
-            <div style={{ padding: '14px 16px', background: 'var(--bg-input)' }}>
-              <strong style={{ display: 'block', fontSize: 13, color: 'var(--text)', marginBottom: 2 }}>Mein Portfolio</strong>
-              <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{user?.email}</span>
+    <div style={{ minHeight: "100vh", background: "#0a0a0f", display: "flex", alignItems: "center", justifyContent: "center", padding: "20px" }}>
+      <div style={{ width: "100%", maxWidth: "400px" }}>
+        <div style={{ textAlign: "center", marginBottom: "32px" }}>
+          <div style={{ fontSize: "48px", marginBottom: "8px" }}>🏠</div>
+          <h1 style={{ fontSize: "28px", color: "#fff", margin: "0 0 4px" }}>
+            <span>Immo</span><span style={{ color: "#6366f1" }}>Hub</span>
+          </h1>
+          <p style={{ color: "#888", fontSize: "14px" }}>Dein Immobilien-Portfolio</p>
+        </div>
+        <div style={{ background: "#111118", border: "1px solid #2a2a3a", borderRadius: "12px", padding: "24px" }}>
+          <h2 style={{ color: "#fff", fontSize: "18px", marginBottom: "20px", textAlign: "center" }}>
+            {mode === "login" ? "Anmelden" : mode === "register" ? "Registrieren" : "Passwort zurücksetzen"}
+          </h2>
+          <form onSubmit={handleSubmit}>
+            <div style={{ marginBottom: "16px" }}>
+              <label style={{ display: "block", color: "#888", fontSize: "12px", marginBottom: "6px" }}>E-Mail</label>
+              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required
+                style={{ width: "100%", padding: "12px", background: "#1a1a24", border: "1px solid #2a2a3a", borderRadius: "8px", color: "#fff", fontSize: "14px", boxSizing: "border-box" }}
+              />
             </div>
-            <div style={{ height: 1, background: 'var(--border)' }} />
-            <button onClick={() => { setOpen(false); onLogout(); }} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px', background: 'none', border: 'none', color: 'var(--text)', fontSize: 13, cursor: 'pointer', textAlign: 'left' }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-              Abmelden
+            {mode !== "reset" && (
+              <div style={{ marginBottom: "16px", position: "relative" }}>
+                <label style={{ display: "block", color: "#888", fontSize: "12px", marginBottom: "6px" }}>Passwort</label>
+                <input type={showPw ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} required
+                  style={{ width: "100%", padding: "12px", paddingRight: "44px", background: "#1a1a24", border: "1px solid #2a2a3a", borderRadius: "8px", color: "#fff", fontSize: "14px", boxSizing: "border-box" }}
+                />
+                <button type="button" onClick={() => setShowPw(!showPw)}
+                  style={{ position: "absolute", right: "12px", top: "32px", background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: "16px" }}>
+                  {showPw ? "🙈" : "👁"}
+                </button>
+              </div>
+            )}
+            {error && <div style={{ color: "#ef4444", fontSize: "13px", marginBottom: "16px", padding: "10px", background: "rgba(239,68,68,0.1)", borderRadius: "6px" }}>{error}</div>}
+            {message && <div style={{ color: "#22c55e", fontSize: "13px", marginBottom: "16px", padding: "10px", background: "rgba(34,197,94,0.1)", borderRadius: "6px" }}>{message}</div>}
+            <button type="submit" disabled={loading}
+              style={{ width: "100%", padding: "12px", background: "#6366f1", border: "none", borderRadius: "8px", color: "#fff", fontSize: "14px", fontWeight: "600", cursor: loading ? "not-allowed" : "pointer", opacity: loading ? 0.7 : 1 }}>
+              {loading ? "..." : mode === "login" ? "Anmelden" : mode === "register" ? "Registrieren" : "Link senden"}
             </button>
+          </form>
+          <div style={{ marginTop: "16px", textAlign: "center" }}>
+            {mode === "login" && (
+              <>
+                <button onClick={() => setMode("register")} style={{ background: "none", border: "none", color: "#6366f1", cursor: "pointer", fontSize: "13px" }}>Noch kein Konto? Registrieren</button>
+                <br />
+                <button onClick={() => setMode("reset")} style={{ background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: "12px", marginTop: "8px" }}>Passwort vergessen?</button>
+              </>
+            )}
+            {mode !== "login" && (
+              <button onClick={() => setMode("login")} style={{ background: "none", border: "none", color: "#6366f1", cursor: "pointer", fontSize: "13px" }}>Zurück zur Anmeldung</button>
+            )}
           </div>
-        </>
-      )}
+        </div>
+      </div>
     </div>
   );
 };
 
-// Main App Wrapper
-function ImmoHubApp() {
-  const { signOut, portfolio, savePortfolio, showMigration, localData, migrateData, skipMigration } = useAuth();
-  const [saveStatus, setSaveStatus] = useState('saved');
+// ImmoHub App with Cloud Sync
+const ImmoHubApp = () => {
+  const { user, signOut } = useAuth();
+  const [portfolioId, setPortfolioId] = useState(null);
+  const [immobilien, setImmobilien] = useState([]);
+  const [beteiligte, setBeteiligte] = useState([]);
+  const [cloudStatus, setCloudStatus] = useState("saved");
+  const [loading, setLoading] = useState(true);
   const saveTimeoutRef = useRef(null);
-  const [data, setData] = useState({ immobilien: portfolio?.data?.immobilien || [], beteiligte: portfolio?.data?.beteiligte || [] });
 
-  const handleDataChange = (newData) => {
-    setData(newData);
-    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
-    setSaveStatus('saving');
-    saveTimeoutRef.current = setTimeout(async () => {
-      const { error } = await savePortfolio(newData);
-      setSaveStatus(error ? 'error' : 'saved');
-    }, 1500);
+  // Load portfolio on mount
+  useEffect(() => {
+    if (!user) return;
+    loadPortfolio();
+  }, [user]);
+
+  const loadPortfolio = async () => {
+    setLoading(true);
+    const { data, error } = await supabase.from("portfolios").select("*").eq("user_id", user.id).single();
+    if (data) {
+      setPortfolioId(data.id);
+      setImmobilien(data.data?.immobilien || []);
+      setBeteiligte(data.data?.beteiligte || []);
+    } else if (!error || error.message?.includes("no rows")) {
+      // Create new portfolio
+      const { data: newData } = await supabase.from("portfolios").insert({ user_id: user.id, name: "Mein Portfolio", data: { immobilien: [], beteiligte: [] } }).select().single();
+      if (newData) setPortfolioId(newData.id);
+    }
+    setLoading(false);
   };
 
+  const savePortfolio = async (newImmobilien, newBeteiligte) => {
+    if (!portfolioId) return;
+    setCloudStatus("saving");
+    const { error } = await supabase.from("portfolios").update({ data: { immobilien: newImmobilien, beteiligte: newBeteiligte }, updated_at: new Date().toISOString() }).eq("id", portfolioId).select().single();
+    setCloudStatus(error ? "error" : "saved");
+  };
+
+  const handleDataChange = (newImmobilien, newBeteiligte) => {
+    setImmobilien(newImmobilien);
+    setBeteiligte(newBeteiligte);
+    // Debounced save
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = setTimeout(() => savePortfolio(newImmobilien, newBeteiligte), 1500);
+  };
+
+  if (loading) return <LoadingScreen />;
+
   return (
-    <>
-      {showMigration && <MigrationDialog count={localData?.length || 0} onMigrate={migrateData} onSkip={skipMigration} />}
-      <ImmoHubCore 
-        initialData={portfolio?.data?.immobilien || []} 
-        initialBeteiligte={portfolio?.data?.beteiligte || []}
-        onDataChange={handleDataChange}
-        cloudStatus={saveStatus}
-        CloudStatusComponent={() => <CloudStatus status={saveStatus} />}
-        UserMenuComponent={() => <UserMenu onLogout={signOut} />}
-      />
-    </>
+    <ImmoHubCore
+      initialData={immobilien}
+      initialBeteiligte={beteiligte}
+      onDataChange={handleDataChange}
+      UserMenuComponent={() => <UserMenu user={user} onSignOut={signOut} />}
+      CloudStatusComponent={() => <CloudStatus status={cloudStatus} />}
+    />
   );
-}
+};
 
 // Export default with Auth wrapper
 export default function App() {
@@ -7493,3 +7702,4 @@ function AppContent() {
   if (!user) return <AuthScreen />;
   return <ImmoHubApp />;
 }
+
