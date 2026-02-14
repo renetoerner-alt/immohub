@@ -420,6 +420,7 @@ const generateExport = (data, containerRef) => {
         <table>
           <tr><td>Mieteinnahmen ${yr}</td><td class="val">${f(yd.miet)}</td></tr>
           ${yd.nkVor > 0 ? `<tr><td>Einnahmen aus NK Vorauszahlung</td><td class="val">${f(yd.nkVor)}</td></tr>` : ''}
+          ${(yd.nkNach || 0) !== 0 ? `<tr><td>NK-Nachzahlungen</td><td class="val">${f(yd.nkNach)}</td></tr>` : ''}
           ${yd.nkAbr !== 0 ? `<tr><td>NK-Abrechnung ${yr}</td><td class="val">${f(yd.nkAbr)}</td></tr>` : ''}
           <tr class="hl"><td><b>Einnahmen Gesamt</b></td><td class="val"><b>${f(ein)}</b></td></tr>
         </table>
@@ -2031,7 +2032,7 @@ Wichtig:
       werbungskosten.forEach(wk => {
         const jahr = wk.jahr || new Date().getFullYear();
         if (!steuerJahre[jahr]) {
-          steuerJahre[jahr] = { wk: [], miet: 0, nkVor: 0, nkAbr: 0 };
+          steuerJahre[jahr] = { wk: [], miet: 0, nkVor: 0, nkNach: 0, nkAbr: 0 };
         }
         steuerJahre[jahr].wk.push({
           bez: wk.bez || 'Werbungskosten',
@@ -5364,7 +5365,7 @@ const Steuer = ({ p, upd, c }) => {
   const [yr, setYr] = useState(kj);
   const [sec, setSec] = useState(null);
   const [showExport, setShowExport] = useState(false);
-  const yd = p.steuerJahre?.[yr] || { wk: [], miet: c.jm, nkVor: 0, nkAbr: 0 };
+  const yd = p.steuerJahre?.[yr] || { wk: [], miet: c.jm, nkVor: 0, nkNach: 0, nkAbr: 0 };
   const setYd = (f, v) => upd({ ...p, steuerJahre: { ...p.steuerJahre, [yr]: { ...yd, [f]: v } } });
   const addWK = () => setYd('wk', [...yd.wk, { bez: '', betrag: 0 }]);
   const updWK = (i, f, v) => { const a = [...yd.wk]; a[i] = { ...a[i], [f]: f === 'betrag' ? parseFloat(v) || 0 : v }; setYd('wk', a); };
@@ -5374,7 +5375,7 @@ const Steuer = ({ p, upd, c }) => {
   const afaS = jsk < 10 ? c.afaSA : 0;
   const afaTot = afaG + afaS;
   const wkTot = yd.wk.reduce((a, x) => a + (x.betrag || 0), 0);
-  const ein = yd.miet + yd.nkVor + yd.nkAbr;
+  const ein = yd.miet + yd.nkVor + (yd.nkNach || 0) + yd.nkAbr;
   const erg = ein - afaTot - wkTot;
   const stEff = erg * (p.stammdaten.steuersatz / 100);
   const years = []; for (let y = kj; y <= kj + 10; y++) years.push(y);
@@ -5594,6 +5595,7 @@ Erstellt mit ImmoHub · ${new Date().toLocaleDateString('de-DE')}`;
                 <tbody>
                   <tr><td>Mieteinnahmen {yr}</td><td className="val">{fmt(yd.miet)}</td></tr>
                   {yd.nkVor > 0 && <tr><td>Einnahmen aus NK Vorauszahlung {yr}</td><td className="val">{fmt(yd.nkVor)}</td></tr>}
+                  {(yd.nkNach || 0) !== 0 && <tr><td>NK-Nachzahlungen {yr}</td><td className="val">{fmt(yd.nkNach)}</td></tr>}
                   {yd.nkAbr !== 0 && <tr><td>NK-Abrechnung {yr}</td><td className="val">{fmt(yd.nkAbr)}</td></tr>}
                   <tr className="sub"><td>Einnahmen Gesamt</td><td className="val">{fmt(ein)}</td></tr>
                   <tr><td>AfA + Werbungskosten {yr}</td><td className="val neg">-{fmt(afaTot + wkTot)}</td></tr>
@@ -5658,7 +5660,9 @@ Erstellt mit ImmoHub · ${new Date().toLocaleDateString('de-DE')}`;
         <Acc icon={<IconEinnahmen color="#10b981" />} title="Einnahmen" sum={fmt(ein)} open={sec === 'ein'} toggle={() => setSec(sec === 'ein' ? null : 'ein')} color="#10b981">
           <Input label="Mieteinnahmen" value={yd.miet} onChange={v => setYd('miet', v)} suffix="€" />
           <Input label="NK-Vorauszahlung" value={yd.nkVor} onChange={v => setYd('nkVor', v)} suffix="€" />
+          <Input label="NK-Nachzahlungen" value={yd.nkNach || 0} onChange={v => setYd('nkNach', v)} suffix="€" />
           <Input label="NK-Abrechnung" value={yd.nkAbr} onChange={v => setYd('nkAbr', v)} suffix="€" step={0.01} />
+          <p className="hint">NK-Abrechnung: Vorzeichen beachten! + = Nachzahlung an dich, − = Rückzahlung an Mieter</p>
           <div className="res hl"><span>Einnahmen</span><span className="pos">{fmt(ein)}</span></div>
         </Acc>
       </div>
