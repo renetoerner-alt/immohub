@@ -4073,6 +4073,7 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
             <Input label="Wohnungs-Nr." value={s.wohnungsNr} onChange={v => set('wohnungsNr', v)} type="text" ph="z.B. 12" />
             <Input label="Etage" value={s.etage} onChange={v => set('etage', v)} type="text" ph="z.B. 3. OG" />
           </div>
+          <Input label="Vermietete Fläche" value={s.wohnflaeche} onChange={v => set('wohnflaeche', v)} suffix="qm" step={0.5} />
           <hr />
           <button 
             className="btn-reset-section" 
@@ -4253,7 +4254,8 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
             <span>Gesamtmiete</span>
             <span className="pos">{fmt((s.kaltmiete || 0) + (s.nebenkostenVorauszahlung || 0) + (s.mieteStellplatz || 0) + (s.mieteSonderausstattung || 0))}/Mon.</span>
           </div>
-          <div className="res"><span>Jahres-Kaltmiete</span><span className="pos">{fmt(((s.kaltmiete || 0) + (s.mieteStellplatz || 0) + (s.mieteSonderausstattung || 0)) * 12)}</span></div>
+          <div className="res"><span>Jahres-Kaltmiete</span><span className="pos">{fmt(((s.kaltmiete || 0) + (s.mieteStellplatz || 0) + (s.mieteSonderausstattung || 0)) * 12)} (mtl. {fmt((s.kaltmiete || 0) + (s.mieteStellplatz || 0) + (s.mieteSonderausstattung || 0))})</span></div>
+          {(s.wohnflaeche || 0) > 0 && <div className="res"><span>→ pro qm</span><span className="pos">{fmtPlain((((s.kaltmiete || 0) + (s.mieteStellplatz || 0) + (s.mieteSonderausstattung || 0)) / s.wohnflaeche))} €/qm</span></div>}
           
           <hr />
           {/* Geplante Mieterhöhungen */}
