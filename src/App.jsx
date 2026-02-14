@@ -3480,11 +3480,440 @@ Wichtig:
   );
 };
 
+// ============================================================================
+// SMART LOAN IMPORT — Darlehen-Extraktion mit Immobilien-Zuordnung
+// ============================================================================
+
+const slNormalize = (str) => {
+  if (!str) return '';
+  return str.toLowerCase()
+    .replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss')
+    .replace(/[^a-z0-9]/g, ' ').replace(/\s+/g, ' ').trim();
+};
+
+const slExtractLast4 = (str) => {
+  if (!str) return null;
+  const digits = str.replace(/\D/g, '');
+  return digits.length >= 4 ? digits.slice(-4) : (digits.length > 0 ? digits : null);
+};
+
+const slJaccard = (a, b) => {
+  if (!a || !b) return 0;
+  const setA = new Set(a.split(' ')); const setB = new Set(b.split(' '));
+  const inter = new Set([...setA].filter(x => setB.has(x)));
+  const union = new Set([...setA, ...setB]);
+  return union.size === 0 ? 0 : inter.size / union.size;
+};
+
+const SL_CITY_ALIASES = {
+  'muc': ['muenchen','munich'], 'ber': ['berlin'], 'hh': ['hamburg'], 'ffm': ['frankfurt'],
+  'cgn': ['koeln','cologne'], 'dus': ['duesseldorf'], 'stg': ['stuttgart'],
+};
+
+const slBuildProfile = (immo) => {
+  const s = immo.stammdaten || {};
+  const darlehen = immo.darlehen || [];
+  const knownLast4s = darlehen.map(d => slExtractLast4(d.kontonummer)).filter(Boolean);
+  const knownBanks = darlehen.map(d => slNormalize(d.institut)).filter(Boolean);
+  const allTokens = [...new Set([
+    ...slNormalize(s.name || '').split(' ').filter(t => t.length >= 2),
+    ...slNormalize(s.adresse || '').split(' ').filter(t => t.length >= 2),
+    ...slNormalize(s.projekt || '').split(' ').filter(t => t.length >= 2),
+  ])];
+  return { id: immo.id, name: s.name || `Immobilie ${immo.id}`, adresse: s.adresse || '', typ: s.typ || '',
+    knownLast4s, knownBanks, allTokens, existingDarlehen: darlehen,
+    normalizedName: slNormalize(s.name || ''), normalizedAdresse: slNormalize(s.adresse || '') };
+};
+
+const slComputeMatch = (loan, profile) => {
+  let confidence = 0; const reasons = [];
+  if (loan.accountLast4 && profile.knownLast4s.includes(loan.accountLast4)) {
+    confidence += 0.6; reasons.push(`Kontonummer-Last4 "${loan.accountLast4}" stimmt überein`);
+  }
+  if (loan.accountNumber) {
+    const l4 = slExtractLast4(loan.accountNumber);
+    if (l4 && profile.knownLast4s.includes(l4) && !reasons.length) {
+      confidence += 0.15; reasons.push('Kontonummer-Endziffern passen');
+    }
+  }
+  if (loan.lender) {
+    const nl = slNormalize(loan.lender);
+    for (const bank of profile.knownBanks) {
+      if (bank && nl && (nl.includes(bank) || bank.includes(nl))) {
+        confidence += 0.1; reasons.push(`Bank "${loan.lender}" passt`); break;
+      }
+    }
+  }
+  const normLabel = slNormalize(loan.rawLabel || loan.normalizedLabel || '');
+  for (const token of profile.allTokens) {
+    if (token.length >= 3 && normLabel.includes(token)) {
+      confidence += 0.15; reasons.push(`Label enthält "${token}"`); break;
+    }
+  }
+  const jacc = slJaccard(normLabel, profile.normalizedName);
+  if (jacc > 0.3) { confidence += jacc * 0.2; reasons.push(`Textähnlichkeit: ${(jacc*100).toFixed(0)}%`); }
+  for (const [alias, exps] of Object.entries(SL_CITY_ALIASES)) {
+    if (normLabel.includes(alias)) {
+      for (const exp of exps) {
+        if (profile.normalizedAdresse.includes(exp)) {
+          confidence += 0.12; reasons.push(`Stadt-Alias "${alias}"`); break;
+        }
+      }
+    }
+  }
+  if (loan.balance > 0) {
+    for (const ed of profile.existingDarlehen) {
+      const eb = ed.restschuld || ed.betrag || 0;
+      if (eb > 0 && Math.min(loan.balance, eb) / Math.max(loan.balance, eb) > 0.85) {
+        confidence += 0.1; reasons.push(`Restschuld ähnlich (${eb.toLocaleString('de-DE')}€)`); break;
+      }
+    }
+  }
+  return { confidence: Math.min(confidence, 1.0), reasons };
+};
+
+const slMatchLoan = (loan, profiles) => {
+  if (profiles.length === 0) return { status: 'unassigned', propertyId: null, financingId: null, candidates: [] };
+  const scored = profiles.map(pr => {
+    const { confidence, reasons } = slComputeMatch(loan, pr);
+    return { propertyId: String(pr.id), financingId: null, confidence: Math.round(confidence*100)/100, reasons, profileName: pr.name };
+  }).filter(c => c.confidence > 0).sort((a,b) => b.confidence - a.confidence);
+  const top = scored[0];
+  if (top && top.confidence >= 0.6) return { status: 'matched', propertyId: top.propertyId, financingId: null, candidates: scored.slice(0,3) };
+  if (top && top.confidence >= 0.2) return { status: 'suggested', propertyId: top.propertyId, financingId: null, candidates: scored.slice(0,3) };
+  return { status: 'unassigned', propertyId: null, financingId: null, candidates: scored.slice(0,3) };
+};
+
+const slGeneratePrompt = (immobilien) => {
+  let ctx = '';
+  if (immobilien?.length > 0) {
+    const lines = immobilien.map((immo, i) => {
+      const s = immo.stammdaten || {};
+      const dInfo = (immo.darlehen || []).map(d => [d.institut, d.kontonummer, d.betrag ? `${d.betrag}€` : ''].filter(Boolean).join(', ')).filter(Boolean);
+      return `  ${i+1}. "${s.name||'?'}"${s.adresse ? ` · ${s.adresse}` : ''}${dInfo.length ? ` [Darlehen: ${dInfo.join(' | ')}]` : ''}`;
+    });
+    ctx = `\n\nVorhandene Immobilien:\n${lines.join('\n')}`;
+  }
+  return `Du bist ein Experte für die Extraktion von Darlehens-/Kreditdaten aus Screenshots und Dokumenten.
+Extrahiere ALLE Darlehen / Kreditpositionen. Trenne strikt nach Zeilen/Blöcken.
+Deutsche Zahlenformate: "1.234,56" → 1234.56. Erfinde KEINE Werte.
+Beträge als Dezimalzahlen, Zinssätze als Dezimalzahl (z.B. 3.5), Datum YYYY-MM-DD.${ctx}
+
+Antworte NUR mit validem JSON:
+{
+  "loans": [{
+    "sourceIndex": 1, "rawLabel": "...", "normalizedLabel": "...",
+    "balance": 123456.78, "currency": "EUR", "accountNumber": "..." | null,
+    "lender": "..." | null, "interestRate": 3.5 | null, "effectiveRate": 3.65 | null,
+    "repaymentRate": 2.0 | null, "monthlyPayment": 1234.56 | null,
+    "originalAmount": 200000 | null, "maturityDate": "YYYY-MM-DD" | null,
+    "fixedRateEnd": "YYYY-MM-DD" | null, "fixedRateYears": 10 | null,
+    "loanType": "annuitaeten|tilgung|endfaellig|kfw|bauspar|privat|forward|sonstig" | null,
+    "specialRepayment": 5.0 | null, "startDate": "YYYY-MM-DD" | null,
+    "firstPaymentDate": "YYYY-MM-DD" | null, "uncertainFields": [],
+    "propertyHint": "..." | null
+  }],
+  "documentNotes": []
+}`;
+};
+
+const slTransform = (aiLoans, immobilien) => {
+  const profiles = immobilien.map(slBuildProfile);
+  return aiLoans.map((loan, idx) => {
+    const accountLast4 = slExtractLast4(loan.accountNumber);
+    const match = slMatchLoan({ ...loan, accountLast4 }, profiles);
+    return {
+      sourceIndex: loan.sourceIndex || idx+1,
+      rawLabel: loan.rawLabel || null, normalizedLabel: loan.normalizedLabel || null,
+      balance: loan.balance || null, currency: loan.currency || 'EUR',
+      accountNumber: loan.accountNumber || null, accountLast4: accountLast4 || null,
+      lender: loan.lender || null, interestRate: loan.interestRate || null,
+      monthlyPayment: loan.monthlyPayment || null, maturityDate: loan.maturityDate || null,
+      uncertainFields: loan.uncertainFields || [],
+      _importData: {
+        name: loan.normalizedLabel || loan.rawLabel || `Darlehen ${idx+1}`,
+        institut: loan.lender || '', kontonummer: loan.accountNumber || '',
+        typ: loan.loanType || 'annuitaeten',
+        betrag: loan.originalAmount || loan.balance || 0,
+        zinssatz: loan.interestRate || 0, effektivzins: loan.effectiveRate || 0,
+        tilgung: loan.repaymentRate || 0, monatsrate: loan.monthlyPayment || 0,
+        sondertilgung: loan.specialRepayment || 5,
+        abschluss: loan.startDate || '', ersteRate: loan.firstPaymentDate || '',
+        laufzeit: 0, zinsbindungJahre: loan.fixedRateYears || 0,
+        zinsbindungEnde: loan.fixedRateEnd || '', restschuld: loan.balance || 0,
+      },
+      match,
+    };
+  });
+};
+
+const SL_STATUS = {
+  matched: { bg: 'rgba(34,197,94,0.15)', border: '#22c55e', text: '#22c55e', label: '✓ Zugeordnet' },
+  suggested: { bg: 'rgba(245,158,11,0.15)', border: '#f59e0b', text: '#f59e0b', label: '? Vorschlag' },
+  unassigned: { bg: 'rgba(148,163,184,0.15)', border: '#94a3b8', text: '#94a3b8', label: '○ Offen' },
+};
+
+const SmartLoanImportModal = ({ immobilien = [], onClose, onImport }) => {
+  const [file, setFile] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [base64Data, setBase64Data] = useState(null);
+  const [parsing, setParsing] = useState(false);
+  const [error, setError] = useState(null);
+  const [result, setResult] = useState(null);
+  const [step, setStep] = useState('upload');
+  const [selectedLoans, setSelectedLoans] = useState(new Set());
+  const [manualAssignments, setManualAssignments] = useState({});
+  const fileInputRef = useRef(null);
+
+  const handleFileSelect = (e) => {
+    const f = e.target.files?.[0]; if (!f) return;
+    setFile(f); setError(null); setResult(null);
+    if (f.type.startsWith('image/')) setPreview(URL.createObjectURL(f)); else setPreview(null);
+    const reader = new FileReader();
+    reader.onload = () => setBase64Data(reader.result.split(',')[1]);
+    reader.readAsDataURL(f);
+  };
+
+  const startAnalysis = async () => {
+    if (!file || !base64Data) return;
+    setParsing(true); setStep('analyzing'); setError(null);
+    const mediaType = file.type;
+    const sysPrompt = slGeneratePrompt(immobilien);
+    try {
+      const res = await fetch('/api/analyze', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: base64Data, mimeType: mediaType,
+          systemPrompt: sysPrompt + '\n\nAnalysiere dieses Dokument. Antworte nur mit JSON.' }),
+      });
+      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || `API Fehler: ${res.status}`); }
+      const data = await res.json();
+      let jsonStr = (data.text || '').trim();
+      if (jsonStr.includes('```')) jsonStr = jsonStr.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+      const aiResult = JSON.parse(jsonStr);
+      const aiLoans = aiResult.loans || aiResult.darlehen || (Array.isArray(aiResult) ? aiResult : []);
+      if (aiLoans.length === 0) throw new Error('Keine Darlehen im Dokument gefunden.');
+      const transformed = slTransform(aiLoans, immobilien);
+      setResult({ extractedLoans: transformed, notes: aiResult.documentNotes || [] });
+      setSelectedLoans(new Set(transformed.map(l => l.sourceIndex)));
+      setStep('review');
+    } catch (err) {
+      console.error('Smart Import error:', err);
+      setError(`Fehler: ${err.message}`); setStep('upload');
+    }
+    setParsing(false);
+  };
+
+  const handleImportAll = () => {
+    if (!result) return;
+    const finalLoans = result.extractedLoans.filter(l => selectedLoans.has(l.sourceIndex)).map(loan => {
+      const manId = manualAssignments[loan.sourceIndex];
+      if (manId !== undefined) return { ...loan, match: { ...loan.match, status: manId ? 'matched' : 'unassigned', propertyId: manId || null } };
+      return loan;
+    });
+    onImport(finalLoans);
+  };
+
+  const slst = { // inline styles
+    overlay: { position:'fixed',inset:0,background:'rgba(0,0,0,0.7)',backdropFilter:'blur(4px)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:9999,padding:'16px' },
+    modal: { background:'#111118',border:'1px solid #2a2a3a',borderRadius:'16px',width:'100%',maxWidth:'680px',maxHeight:'90vh',display:'flex',flexDirection:'column',boxShadow:'0 24px 48px rgba(0,0,0,0.5)' },
+    header: { display:'flex',alignItems:'center',justifyContent:'space-between',padding:'16px 20px',borderBottom:'1px solid #2a2a3a' },
+    body: { flex:1,overflow:'auto',padding:'20px' },
+    footer: { display:'flex',alignItems:'center',justifyContent:'space-between',padding:'12px 20px',borderTop:'1px solid #2a2a3a',gap:'8px' },
+  };
+
+  return (
+    <div style={slst.overlay} onClick={onClose}>
+      <div style={slst.modal} onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div style={slst.header}>
+          <div style={{display:'flex',alignItems:'center',gap:'12px'}}>
+            <div style={{width:'36px',height:'36px',borderRadius:'8px',background:'rgba(59,130,246,0.1)',display:'flex',alignItems:'center',justifyContent:'center'}}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+            </div>
+            <div>
+              <h2 style={{color:'#fff',fontSize:'16px',fontWeight:'600',margin:0}}>Smart Darlehen-Import</h2>
+              <p style={{color:'#888',fontSize:'12px',margin:0}}>
+                {step === 'upload' && 'Screenshot oder PDF hochladen'}
+                {step === 'analyzing' && 'Wird analysiert...'}
+                {step === 'review' && `${result?.extractedLoans?.length || 0} Darlehen gefunden`}
+              </p>
+            </div>
+          </div>
+          <button style={{background:'none',border:'none',color:'#888',fontSize:'24px',cursor:'pointer'}} onClick={onClose}>×</button>
+        </div>
+
+        {/* Body */}
+        <div style={slst.body}>
+
+          {/* UPLOAD */}
+          {step === 'upload' && (<>
+            <div style={{border:'2px dashed #2a2a3a',borderRadius:'12px',padding:'32px',textAlign:'center',cursor:'pointer',background: file ? 'rgba(59,130,246,0.05)' : '#0d0d14', borderColor: file ? '#3b82f6' : '#2a2a3a'}}
+              onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files?.[0]; if(f) handleFileSelect({target:{files:[f]}}); }}
+              onDragOver={e => e.preventDefault()} onClick={() => fileInputRef.current?.click()}>
+              <input ref={fileInputRef} type="file" accept=".pdf,.png,.jpg,.jpeg,.webp" onChange={handleFileSelect} style={{display:'none'}} />
+              {preview ? <img src={preview} alt="Preview" style={{maxWidth:'100%',maxHeight:'200px',borderRadius:'8px'}} />
+               : file ? (<><div style={{fontSize:'32px',marginBottom:'8px'}}>📄</div><p style={{color:'#fff',fontSize:'14px'}}>{file.name}</p><small style={{color:'#888'}}>Bereit zur Analyse</small></>)
+               : (<><div style={{marginBottom:'12px'}}><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" strokeWidth="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17,8 12,3 7,8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></div>
+                  <p style={{color:'#ccc',fontSize:'14px'}}>Darlehensübersicht hier ablegen</p>
+                  <small style={{color:'#666',fontSize:'12px'}}>PDF, PNG, JPG · Banking-App, Finanzierungsübersicht, Kontoauszug</small></>)}
+            </div>
+            {error && <div style={{marginTop:'12px',padding:'10px 14px',background:'rgba(239,68,68,0.1)',border:'1px solid rgba(239,68,68,0.2)',borderRadius:'8px',color:'#ef4444',fontSize:'13px'}}>❌ {error}</div>}
+            <div style={{marginTop:'16px',padding:'12px',background:'rgba(59,130,246,0.08)',border:'1px solid rgba(59,130,246,0.2)',borderRadius:'8px'}}>
+              <div style={{display:'flex',alignItems:'center',gap:'6px',color:'#3b82f6',fontSize:'13px',marginBottom:'4px'}}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+                <strong>KI-Analyse mit Zuordnung</strong>
+              </div>
+              <p style={{color:'#999',fontSize:'12px',margin:0}}>
+                Darlehen werden extrahiert und {immobilien.length > 0 ? `${immobilien.length} vorhandenen Immobilien zugeordnet.` : 'als neue Positionen importiert.'}
+              </p>
+            </div>
+            {immobilien.length > 0 && (
+              <div style={{marginTop:'12px'}}>
+                <small style={{color:'#666',fontSize:'11px'}}>Portfolio ({immobilien.length} Immobilien):</small>
+                <div style={{display:'flex',flexWrap:'wrap',gap:'6px',marginTop:'6px'}}>
+                  {immobilien.slice(0,8).map(immo => (
+                    <span key={immo.id} style={{padding:'4px 10px',background:'#1a1a24',border:'1px solid #2a2a3a',borderRadius:'6px',color:'#ccc',fontSize:'11px',display:'flex',alignItems:'center',gap:'4px'}}>
+                      {immo.stammdaten?.name || `#${immo.id}`}
+                      {(immo.darlehen?.length||0) > 0 && <span style={{background:'rgba(59,130,246,0.2)',color:'#3b82f6',padding:'1px 4px',borderRadius:'3px',fontSize:'10px'}}>{immo.darlehen.length}×</span>}
+                    </span>
+                  ))}
+                  {immobilien.length > 8 && <span style={{padding:'4px 10px',background:'#1a1a24',border:'1px solid #2a2a3a',borderRadius:'6px',color:'#666',fontSize:'11px'}}>+{immobilien.length-8}</span>}
+                </div>
+              </div>
+            )}
+          </>)}
+
+          {/* ANALYZING */}
+          {step === 'analyzing' && (
+            <div style={{textAlign:'center',padding:'48px 0'}}>
+              <div style={{width:'32px',height:'32px',border:'3px solid #2a2a3a',borderTopColor:'#3b82f6',borderRadius:'50%',animation:'spin 0.8s linear infinite',margin:'0 auto 16px'}} />
+              <p style={{color:'#fff',fontSize:'14px'}}>Darlehen werden extrahiert...</p>
+              <small style={{color:'#666',fontSize:'12px'}}>Bezeichnungen, Beträge, Kontonummern, Zinssätze</small>
+            </div>
+          )}
+
+          {/* REVIEW */}
+          {step === 'review' && result && (<>
+            {/* Summary */}
+            <div style={{display:'flex',gap:'12px',padding:'12px',background:'#0d0d14',borderRadius:'10px',marginBottom:'16px',flexWrap:'wrap'}}>
+              {[
+                { n: result.extractedLoans.length, l: 'Darlehen', c: '#fff' },
+                { n: result.extractedLoans.filter(l=>l.match.status==='matched').length, l: 'Zugeordnet', c: '#22c55e' },
+                { n: result.extractedLoans.filter(l=>l.match.status==='suggested').length, l: 'Vorschläge', c: '#f59e0b' },
+                { n: result.extractedLoans.filter(l=>l.match.status==='unassigned').length, l: 'Offen', c: '#94a3b8' },
+              ].map((it,i) => (
+                <div key={i} style={{flex:1,minWidth:'60px',textAlign:'center'}}>
+                  <span style={{display:'block',color:it.c,fontSize:'18px',fontWeight:'700'}}>{it.n}</span>
+                  <span style={{color:'#666',fontSize:'10px',textTransform:'uppercase',letterSpacing:'0.5px'}}>{it.l}</span>
+                </div>
+              ))}
+              <div style={{flex:1,minWidth:'80px',textAlign:'center'}}>
+                <span style={{display:'block',color:'#fff',fontSize:'14px',fontWeight:'700'}}>{fmt(result.extractedLoans.reduce((s,l)=>s+(l.balance||0),0))}</span>
+                <span style={{color:'#666',fontSize:'10px',textTransform:'uppercase'}}>Gesamt</span>
+              </div>
+            </div>
+
+            {/* Notes */}
+            {result.notes?.length > 0 && <div style={{marginBottom:'12px'}}>
+              {result.notes.map((n,i) => <div key={i} style={{padding:'8px 12px',background:'rgba(245,158,11,0.1)',border:'1px solid rgba(245,158,11,0.2)',borderRadius:'6px',color:'#fbbf24',fontSize:'12px',marginBottom:'4px'}}>⚠️ {n}</div>)}
+            </div>}
+
+            {/* Loans */}
+            <div style={{display:'flex',flexDirection:'column',gap:'12px'}}>
+              {result.extractedLoans.map(loan => {
+                const st = SL_STATUS[loan.match.status];
+                const isSel = selectedLoans.has(loan.sourceIndex);
+                const curAssign = manualAssignments[loan.sourceIndex] !== undefined ? manualAssignments[loan.sourceIndex] : loan.match.propertyId;
+                const assignedImmo = curAssign ? immobilien.find(i => String(i.id) === String(curAssign)) : null;
+                return (
+                  <div key={loan.sourceIndex} style={{background:'#1a1a24',border:`1px solid ${isSel ? st.border : '#2a2a3a'}`,borderRadius:'10px',padding:'14px',opacity:isSel?1:0.5,transition:'all 0.2s'}}>
+                    {/* Header */}
+                    <div style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'10px'}}>
+                      <label style={{display:'flex',alignItems:'center',gap:'6px',cursor:'pointer'}}>
+                        <input type="checkbox" checked={isSel} onChange={() => { setSelectedLoans(prev => { const n = new Set(prev); n.has(loan.sourceIndex) ? n.delete(loan.sourceIndex) : n.add(loan.sourceIndex); return n; }); }} />
+                        <span style={{color:'#666',fontSize:'11px'}}>#{loan.sourceIndex}</span>
+                      </label>
+                      <div style={{flex:1}}>
+                        <strong style={{color:'#fff',fontSize:'13px',display:'block'}}>{loan.normalizedLabel || loan.rawLabel || `Darlehen ${loan.sourceIndex}`}</strong>
+                        {loan.lender && <small style={{color:'#888',fontSize:'11px'}}>{loan.lender}</small>}
+                      </div>
+                      <span style={{padding:'3px 8px',borderRadius:'6px',fontSize:'11px',fontWeight:'600',border:'1px solid',background:st.bg,borderColor:st.border,color:st.text,whiteSpace:'nowrap'}}>{st.label}</span>
+                    </div>
+                    {/* Details */}
+                    <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(120px,1fr))',gap:'8px',marginBottom:'10px'}}>
+                      {loan.balance != null && <div style={{background:'#0d0d14',borderRadius:'6px',padding:'6px 10px'}}><span style={{display:'block',color:'#666',fontSize:'10px',textTransform:'uppercase'}}>Restschuld</span><span style={{color:'#fff',fontSize:'13px',fontWeight:'500'}}>{fmt(loan.balance)}</span></div>}
+                      {loan.interestRate != null && <div style={{background:'#0d0d14',borderRadius:'6px',padding:'6px 10px'}}><span style={{display:'block',color:'#666',fontSize:'10px',textTransform:'uppercase'}}>Zinssatz</span><span style={{color:'#fff',fontSize:'13px',fontWeight:'500'}}>{loan.interestRate}%</span></div>}
+                      {loan.monthlyPayment != null && <div style={{background:'#0d0d14',borderRadius:'6px',padding:'6px 10px'}}><span style={{display:'block',color:'#666',fontSize:'10px',textTransform:'uppercase'}}>Rate/Mon.</span><span style={{color:'#fff',fontSize:'13px',fontWeight:'500'}}>{fmt(loan.monthlyPayment)}</span></div>}
+                      {loan.accountNumber && <div style={{background:'#0d0d14',borderRadius:'6px',padding:'6px 10px'}}><span style={{display:'block',color:'#666',fontSize:'10px',textTransform:'uppercase'}}>Konto</span><span style={{color:'#fff',fontSize:'13px',fontWeight:'500'}}>{loan.accountNumber}</span></div>}
+                    </div>
+                    {/* Uncertain */}
+                    {loan.uncertainFields?.length > 0 && <div style={{padding:'6px 10px',background:'rgba(245,158,11,0.08)',borderRadius:'6px',color:'#fbbf24',fontSize:'11px',marginBottom:'10px'}}>⚠️ Unsicher: {loan.uncertainFields.join(', ')}</div>}
+                    {/* Assignment Dropdown */}
+                    <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'8px'}}>
+                      <span style={{color:'#888',fontSize:'12px',whiteSpace:'nowrap'}}>Immobilie:</span>
+                      <select value={curAssign || ''} onChange={e => setManualAssignments(prev => ({...prev, [loan.sourceIndex]: e.target.value || null}))}
+                        style={{flex:1,padding:'6px 10px',background:'#0d0d14',border:'1px solid #2a2a3a',borderRadius:'6px',color:'#fff',fontSize:'12px'}}>
+                        <option value="">— Nicht zugeordnet —</option>
+                        {immobilien.map(immo => <option key={immo.id} value={String(immo.id)}>{immo.stammdaten?.name || `#${immo.id}`}{immo.stammdaten?.adresse ? ` (${immo.stammdaten.adresse})` : ''}</option>)}
+                      </select>
+                    </div>
+                    {/* Candidates */}
+                    {loan.match.candidates?.length > 0 && (
+                      <div style={{borderTop:'1px solid #2a2a3a',paddingTop:'8px'}}>
+                        <small style={{color:'#666',fontSize:'10px',textTransform:'uppercase',letterSpacing:'0.3px'}}>Matching-Kandidaten:</small>
+                        {loan.match.candidates.map((c,ci) => (
+                          <div key={ci} style={{padding:'6px 8px',borderRadius:'6px',marginTop:'4px',cursor:'pointer'}}
+                            onClick={() => setManualAssignments(prev => ({...prev, [loan.sourceIndex]: c.propertyId}))}>
+                            <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+                              <span style={{color:'#ccc',fontSize:'12px',flex:1}}>{c.profileName}</span>
+                              <div style={{width:'48px',height:'4px',background:'#2a2a3a',borderRadius:'2px',overflow:'hidden'}}>
+                                <div style={{height:'100%',borderRadius:'2px',width:`${c.confidence*100}%`,background:c.confidence>=0.6?'#22c55e':c.confidence>=0.3?'#f59e0b':'#94a3b8'}} />
+                              </div>
+                              <span style={{color:'#888',fontSize:'11px',width:'28px',textAlign:'right'}}>{(c.confidence*100).toFixed(0)}%</span>
+                            </div>
+                            <div style={{marginTop:'2px',paddingLeft:'4px'}}>
+                              {c.reasons.map((r,ri) => <small key={ri} style={{display:'block',color:'#666',fontSize:'10px',lineHeight:1.4}}>• {r}</small>)}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </>)}
+        </div>
+
+        {/* Footer */}
+        <div style={slst.footer}>
+          {step === 'upload' && (<>
+            <button className="btn" onClick={onClose} style={{background:'#1a1a24',border:'1px solid #2a2a3a'}}>Abbrechen</button>
+            <button className="btn" onClick={startAnalysis} disabled={!file} style={{background:'#3b82f6',border:'none',opacity:file?1:0.5,cursor:file?'pointer':'not-allowed'}}>🔍 Analysieren</button>
+          </>)}
+          {step === 'analyzing' && <button className="btn" onClick={() => { setParsing(false); setStep('upload'); }} style={{background:'#1a1a24',border:'1px solid #2a2a3a'}}>Abbrechen</button>}
+          {step === 'review' && (<>
+            <button className="btn" onClick={() => { setStep('upload'); setResult(null); }} style={{background:'#1a1a24',border:'1px solid #2a2a3a'}}>← Zurück</button>
+            <div style={{display:'flex',gap:'8px'}}>
+              <button className="btn" onClick={() => {
+                const out = { extractedLoans: result.extractedLoans.filter(l => selectedLoans.has(l.sourceIndex)).map(({_importData,...rest}) => rest), notes: result.notes || [] };
+                navigator.clipboard?.writeText(JSON.stringify(out, null, 2));
+              }} style={{background:'none',border:'1px solid #2a2a3a',color:'#888',fontSize:'12px'}}>📋 JSON</button>
+              <button className="btn" onClick={handleImportAll} disabled={selectedLoans.size===0} style={{background:'#3b82f6',border:'none',opacity:selectedLoans.size>0?1:0.5}}>✓ {selectedLoans.size} importieren</button>
+            </div>
+          </>)}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // Stammdaten
-const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, validationErrors = {}, beteiligte = [] }) => {
+const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, validationErrors = {}, beteiligte = [], immobilien = [], onSmartImport }) => {
   const [sec, setSec] = useState(null);
   const [secExpanded, setSecExpanded] = useState(false);
   const [darlehenImportModal, setDarlehenImportModal] = useState(false);
+  const [smartImportModal, setSmartImportModal] = useState(false);
   const [tilgungsplanDarlehen, setTilgungsplanDarlehen] = useState(null);
   const [mhistOpen, setMhistOpen] = useState(false);
   const [mhistImportModal, setMhistImportModal] = useState(false);
@@ -4066,7 +4495,7 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
           if (summeFK > 0) parts.push(`${fmt(summeFK)} FK`);
           if (foerderungen > 0) parts.push(`${fmt(foerderungen)} Förderung`);
           return parts.join(', ') || `${s.eigenkapitalAnteil}% EK`;
-        })()} open={sec === 'fin'} toggle={() => setSec(sec === 'fin' ? null : 'fin')} color="#3b82f6" onImport={() => setDarlehenImportModal(true)}>
+        })()} open={sec === 'fin'} toggle={() => setSec(sec === 'fin' ? null : 'fin')} color="#3b82f6" onImport={() => setSmartImportModal(true)}>
           
           {/* Eigenkapital-Details */}
           <div className="field-group-label">Eigenkapital</div>
@@ -4672,6 +5101,24 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
           onImport={(importedDarlehen) => {
             upd({ ...p, darlehen: [...(p.darlehen || []), ...importedDarlehen] });
             setDarlehenImportModal(false);
+          }}
+        />
+      )}
+      
+      {/* Smart Darlehen Import Modal */}
+      {smartImportModal && (
+        <SmartLoanImportModal
+          immobilien={immobilien}
+          onClose={() => setSmartImportModal(false)}
+          onImport={(finalLoans) => {
+            if (onSmartImport) {
+              onSmartImport(finalLoans);
+            } else {
+              // Fallback: nur aktuelle Immobilie
+              const importData = finalLoans.map(l => l._importData);
+              upd({ ...p, darlehen: [...(p.darlehen || []), ...importData] });
+            }
+            setSmartImportModal(false);
           }}
         />
       )}
@@ -6259,6 +6706,45 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
     }
   };
   
+  // Smart Loan Import: Darlehen mehreren Immobilien zuordnen
+  const handleSmartImport = (finalLoans) => {
+    // Gruppiere nach propertyId
+    const byProperty = {};
+    const unassigned = [];
+    for (const loan of finalLoans) {
+      const pid = loan.match?.propertyId;
+      if (pid && loan.match.status !== 'unassigned') {
+        if (!byProperty[pid]) byProperty[pid] = [];
+        byProperty[pid].push(loan._importData);
+      } else {
+        unassigned.push(loan._importData);
+      }
+    }
+    // Immobilien updaten
+    let newSaved = [...saved];
+    for (const [pid, darlehen] of Object.entries(byProperty)) {
+      newSaved = newSaved.map(immo => {
+        if (String(immo.id) === String(pid)) {
+          return { ...immo, darlehen: [...(immo.darlehen || []), ...darlehen] };
+        }
+        return immo;
+      });
+    }
+    // Unzugeordnete: zur aktuellen Immobilie hinzufügen
+    if (unassigned.length > 0 && curr) {
+      newSaved = newSaved.map(immo => {
+        if (immo.id === curr.id) {
+          return { ...immo, darlehen: [...(immo.darlehen || []), ...unassigned] };
+        }
+        return immo;
+      });
+    }
+    setSaved(newSaved);
+    // curr aktualisieren falls betroffen
+    const updatedCurr = newSaved.find(i => i.id === curr?.id);
+    if (updatedCurr) setCurr(updatedCurr);
+  };
+
   // Undo Funktion
   const onUndo = () => {
     if (history.length > 0) {
@@ -7583,7 +8069,7 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
           </div>
         ) : (
           <>
-            {tab === 'stamm' && <Stamm p={curr} upd={onUpd} c={c} onSave={onSave} saved={isSaved} onOpenImport={() => setImportModal(true)} onDelete={() => setDeleteConfirm(curr?.id)} onDiscard={() => { setCurr(null); setTab('dash'); }} validationErrors={validationErrors} beteiligte={beteiligte} />}
+            {tab === 'stamm' && <Stamm p={curr} upd={onUpd} c={c} onSave={onSave} saved={isSaved} onOpenImport={() => setImportModal(true)} onDelete={() => setDeleteConfirm(curr?.id)} onDiscard={() => { setCurr(null); setTab('dash'); }} validationErrors={validationErrors} beteiligte={beteiligte} immobilien={saved} onSmartImport={handleSmartImport} />}
             {tab === 'rendite' && isSaved && <Rendite p={curr} upd={onUpd} c={c} />}
             {tab === 'steuer' && isSaved && <Steuer p={curr} upd={onUpd} c={c} />}
           </>
