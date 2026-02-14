@@ -376,8 +376,8 @@ const generateExport = (data, containerRef) => {
     <h2>Anschaffungskosten</h2>
     <table>
       <tr><td>+ Kaufpreis Immobilie</td><td class="val">${f(s.kaufpreisImmobilie)}</td><td></td></tr>
-      ${s.kaufpreisStellplatz > 0 ? `<tr><td>+ Kaufpreis Stellplatz</td><td class="val">${f(s.kaufpreisStellplatz)}</td><td></td></tr>` : ''}
       ${s.mehrkosten > 0 ? `<tr><td>+ Mehrkosten</td><td class="val">${f(s.mehrkosten)}</td><td></td></tr>` : ''}
+      ${s.kaufpreisStellplatz > 0 ? `<tr><td>+ Kaufpreis Stellplatz</td><td class="val">${f(s.kaufpreisStellplatz)}</td><td></td></tr>` : ''}
       ${s.maklerProvision > 0 ? `<tr><td>+ Vermittlungsprovision (Makler)</td><td class="val">${f(s.maklerProvision)}</td><td></td></tr>` : ''}
       <tr><td>+ Grunderwerbsteuer</td><td class="val">${f(s.grunderwerbsteuer)}</td><td class="note">${BUNDESLAENDER[s.bundesland]?.grest || 6}% vom KP</td></tr>
       <tr><td>+ Notarkosten</td><td class="val">${f(s.notarkosten)}</td><td></td></tr>
@@ -420,7 +420,7 @@ const generateExport = (data, containerRef) => {
         <table>
           <tr><td>Mieteinnahmen ${yr}</td><td class="val">${f(yd.miet)}</td></tr>
           ${yd.nkVor > 0 ? `<tr><td>Einnahmen aus NK Vorauszahlung</td><td class="val">${f(yd.nkVor)}</td></tr>` : ''}
-          ${(yd.nkNach || 0) !== 0 ? `<tr><td>NK-Nachzahlungen</td><td class="val">${f(yd.nkNach)}</td></tr>` : ''}
+          ${(yd.nkNach || 0) !== 0 ? `<tr><td>NK-Nachzahlungen VJ</td><td class="val">${f(yd.nkNach)}</td></tr>` : ''}
           ${yd.nkAbr !== 0 ? `<tr><td>NK-Abrechnung ${yr}</td><td class="val">${f(yd.nkAbr)}</td></tr>` : ''}
           <tr class="hl"><td><b>Einnahmen Gesamt</b></td><td class="val"><b>${f(ein)}</b></td></tr>
         </table>
@@ -937,8 +937,8 @@ const save = (d) => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(d))
 
 const useCalc = (s) => useMemo(() => {
   if (!s) return {};
-  const kp = (s.kaufpreisImmobilie || 0) + (s.kaufpreisStellplatz || 0);
-  const nk = (s.mehrkosten || 0) + (s.maklerProvision || 0) + (s.grunderwerbsteuer || 0) + (s.notarkosten || 0);
+  const kp = (s.kaufpreisImmobilie || 0) + (s.mehrkosten || 0) + (s.kaufpreisStellplatz || 0);
+  const nk = (s.maklerProvision || 0) + (s.grunderwerbsteuer || 0) + (s.notarkosten || 0);
   const ak = kp + nk;
   const gwg = (s.grundstueckGroesse || 0) * (s.bodenrichtwert || 0);
   const ga = s.teileigentumsanteil > 0 ? (s.teileigentumsanteil / 10000) * gwg : 0;
@@ -1091,7 +1091,7 @@ const DateInput = ({ value, onChange, placeholder }) => {
   );
 };
 
-const Input = ({ label, value, onChange, suffix, step = 1, type = 'number', ph, error }) => {
+const Input = ({ label, value, onChange, suffix, step = 1, type = 'number', ph, error, className }) => {
   const isDate = type === 'date';
   const isYear = type === 'year';
   const isNumber = type === 'number';
@@ -1154,7 +1154,7 @@ const Input = ({ label, value, onChange, suffix, step = 1, type = 'number', ph, 
   };
   
   return (
-    <div className="irow">
+    <div className={`irow ${className || ''}`}>
       <label>{label}</label>
       <div className="ifld-wrap">
         <div className={`ifld ${error ? 'input-error' : ''}`}>
@@ -3991,9 +3991,9 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
   
   const set = (f, v) => {
     const n = { ...s, [f]: v };
-    if (['bundesland', 'kaufpreisImmobilie', 'kaufpreisStellplatz'].includes(f)) {
+    if (['bundesland', 'kaufpreisImmobilie', 'kaufpreisStellplatz', 'mehrkosten'].includes(f)) {
       const bl = f === 'bundesland' ? v : s.bundesland;
-      const kp = (f === 'kaufpreisImmobilie' ? v : s.kaufpreisImmobilie) + (f === 'kaufpreisStellplatz' ? v : s.kaufpreisStellplatz);
+      const kp = (f === 'kaufpreisImmobilie' ? v : s.kaufpreisImmobilie) + (f === 'mehrkosten' ? v : (s.mehrkosten || 0)) + (f === 'kaufpreisStellplatz' ? v : s.kaufpreisStellplatz);
       n.grunderwerbsteuer = kp * ((BUNDESLAENDER[bl]?.grest || 6) / 100);
     }
     upd({ ...p, stammdaten: n });
@@ -4088,11 +4088,11 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
         </Acc>
         <Acc icon={<IconKaufpreis color="#10b981" />} title="Kaufpreis und Verkehrswert" sum={`${fmt(c.kp)} + ${fmt(c.nk)} NK`} open={sec === 'kp'} toggle={() => setSec(sec === 'kp' ? null : 'kp')} color="#10b981">
           <Input label="Kaufpreis Immobilie" value={s.kaufpreisImmobilie} onChange={v => set('kaufpreisImmobilie', v)} suffix="€" step={1000} error={validationErrors.kaufpreisImmobilie} />
+          <Input label="Mehrkosten" value={s.mehrkosten} onChange={v => set('mehrkosten', v)} suffix="€" />
           <Input label="Kaufpreis Stellplatz" value={s.kaufpreisStellplatz} onChange={v => set('kaufpreisStellplatz', v)} suffix="€" error={validationErrors.kaufpreisStellplatz} />
           <div className="res"><span>= Kaufpreis</span><span>{fmt(c.kp)}</span></div>
           <hr />
           <Input label="Makler" value={s.maklerProvision} onChange={v => set('maklerProvision', v)} suffix="€" />
-          <Input label="Mehrkosten" value={s.mehrkosten} onChange={v => set('mehrkosten', v)} suffix="€" />
           <Input label="Grunderwerbsteuer" value={s.grunderwerbsteuer} onChange={v => set('grunderwerbsteuer', v)} suffix="€" />
           <Input label="Notar" value={s.notarkosten} onChange={v => set('notarkosten', v)} suffix="€" />
           <div className="res hl"><span>= Anschaffungskosten</span><span>{fmt(c.ak)}</span></div>
@@ -5365,8 +5365,36 @@ const Steuer = ({ p, upd, c }) => {
   const [yr, setYr] = useState(kj);
   const [sec, setSec] = useState(null);
   const [showExport, setShowExport] = useState(false);
-  const yd = p.steuerJahre?.[yr] || { wk: [], miet: c.jm, nkVor: 0, nkNach: 0, nkAbr: 0 };
-  const setYd = (f, v) => upd({ ...p, steuerJahre: { ...p.steuerJahre, [yr]: { ...yd, [f]: v } } });
+
+  // Vorjahres-Daten holen
+  const prevYd = p.steuerJahre?.[yr - 1] || null;
+  const hasOwnData = !!p.steuerJahre?.[yr];
+
+  // Wenn kein eigenes Jahr existiert, aber Vorjahr vorhanden → Vorjahreswerte als Draft
+  const EINNAHMEN_FIELDS = ['miet', 'nkVor', 'nkNach', 'nkAbr'];
+  const defaultYd = { wk: [], miet: c.jm, nkVor: 0, nkNach: 0, nkAbr: 0 };
+  const rawYd = p.steuerJahre?.[yr];
+  const isDraft = !hasOwnData && !!prevYd;
+  const yd = rawYd || (isDraft ? { ...defaultYd, miet: prevYd.miet || c.jm, nkVor: prevYd.nkVor || 0, nkNach: prevYd.nkNach || 0, nkAbr: prevYd.nkAbr || 0, wk: (prevYd.wk || []).map(w => ({ ...w })), _confirmed: [] } : defaultYd);
+
+  // Confirmed-Tracking: welche Felder wurden vom User bestätigt/bearbeitet?
+  const confirmed = new Set(yd._confirmed || (hasOwnData && !yd._confirmed ? EINNAHMEN_FIELDS : []));
+  // Wenn Jahresdaten bereits existierten (manuell eingegeben), gelten sie als bestätigt
+  const isFieldConfirmed = (field) => hasOwnData && !yd._confirmed ? true : confirmed.has(field);
+  const allConfirmed = EINNAHMEN_FIELDS.every(f => isFieldConfirmed(f));
+
+  const setYd = (f, v) => {
+    const newConfirmed = [...new Set([...(yd._confirmed || []), f])];
+    upd({ ...p, steuerJahre: { ...p.steuerJahre, [yr]: { ...yd, [f]: v, _confirmed: newConfirmed } } });
+  };
+  const confirmField = (f) => {
+    const newConfirmed = [...new Set([...(yd._confirmed || []), f])];
+    upd({ ...p, steuerJahre: { ...p.steuerJahre, [yr]: { ...yd, _confirmed: newConfirmed } } });
+  };
+  const confirmAll = () => {
+    upd({ ...p, steuerJahre: { ...p.steuerJahre, [yr]: { ...yd, _confirmed: [...EINNAHMEN_FIELDS] } } });
+  };
+
   const addWK = () => setYd('wk', [...yd.wk, { bez: '', betrag: 0 }]);
   const updWK = (i, f, v) => { const a = [...yd.wk]; a[i] = { ...a[i], [f]: f === 'betrag' ? parseFloat(v) || 0 : v }; setYd('wk', a); };
   const delWK = i => setYd('wk', yd.wk.filter((_, x) => x !== i));
@@ -5375,9 +5403,12 @@ const Steuer = ({ p, upd, c }) => {
   const afaS = jsk < 10 ? c.afaSA : 0;
   const afaTot = afaG + afaS;
   const wkTot = yd.wk.reduce((a, x) => a + (x.betrag || 0), 0);
-  const ein = yd.miet + yd.nkVor + (yd.nkNach || 0) + yd.nkAbr;
-  const erg = ein - afaTot - wkTot;
-  const stEff = erg * (p.stammdaten.steuersatz / 100);
+
+  // Einnahmen nur aus bestätigten Feldern berechnen
+  const confirmedVal = (field) => isFieldConfirmed(field) ? (yd[field] || 0) : 0;
+  const ein = confirmedVal('miet') + confirmedVal('nkVor') + confirmedVal('nkNach') + confirmedVal('nkAbr');
+  const erg = allConfirmed ? ein - afaTot - wkTot : null;
+  const stEff = erg !== null ? erg * (p.stammdaten.steuersatz / 100) : null;
   const years = []; for (let y = kj; y <= kj + 10; y++) years.push(y);
 
   // Export-Komponente
@@ -5531,10 +5562,10 @@ Erstellt mit ImmoHub · ${new Date().toLocaleDateString('de-DE')}`;
           <table className="export-table">
             <tbody>
               <tr><td>+ Kaufpreis Immobilie</td><td className="val">{fmt(s.kaufpreisImmobilie)}</td></tr>
-              {s.kaufpreisStellplatz > 0 && <tr><td>+ Kaufpreis Stellplatz</td><td className="val">{fmt(s.kaufpreisStellplatz)}</td></tr>}
               {s.mehrkosten > 0 && <tr><td>+ Mehrkosten</td><td className="val">{fmt(s.mehrkosten)}</td></tr>}
+              {s.kaufpreisStellplatz > 0 && <tr><td>+ Kaufpreis Stellplatz</td><td className="val">{fmt(s.kaufpreisStellplatz)}</td></tr>}
               {s.maklerProvision > 0 && <tr><td>+ Vermittlungsprovision (Makler)</td><td className="val">{fmt(s.maklerProvision)}</td></tr>}
-              <tr className="sub"><td>Zwischensumme</td><td className="val">{fmt(c.kp + (s.mehrkosten || 0) + (s.maklerProvision || 0))}</td></tr>
+              <tr className="sub"><td>Zwischensumme</td><td className="val">{fmt(c.kp + (s.maklerProvision || 0))}</td></tr>
               <tr><td>+ Grunderwerbsteuer</td><td className="val">{fmt(s.grunderwerbsteuer)}</td><td className="note">{BUNDESLAENDER[s.bundesland]?.grest || 6}% vom KP</td></tr>
               <tr><td>+ Notarkosten</td><td className="val">{fmt(s.notarkosten)}</td></tr>
               <tr className="hl"><td>Anschaffungskosten Gesamt</td><td className="val">{fmt(c.ak)}</td></tr>
@@ -5595,7 +5626,7 @@ Erstellt mit ImmoHub · ${new Date().toLocaleDateString('de-DE')}`;
                 <tbody>
                   <tr><td>Mieteinnahmen {yr}</td><td className="val">{fmt(yd.miet)}</td></tr>
                   {yd.nkVor > 0 && <tr><td>Einnahmen aus NK Vorauszahlung {yr}</td><td className="val">{fmt(yd.nkVor)}</td></tr>}
-                  {(yd.nkNach || 0) !== 0 && <tr><td>NK-Nachzahlungen {yr}</td><td className="val">{fmt(yd.nkNach)}</td></tr>}
+                  {(yd.nkNach || 0) !== 0 && <tr><td>NK-Nachzahlungen VJ {yr}</td><td className="val">{fmt(yd.nkNach)}</td></tr>}
                   {yd.nkAbr !== 0 && <tr><td>NK-Abrechnung {yr}</td><td className="val">{fmt(yd.nkAbr)}</td></tr>}
                   <tr className="sub"><td>Einnahmen Gesamt</td><td className="val">{fmt(ein)}</td></tr>
                   <tr><td>AfA + Werbungskosten {yr}</td><td className="val neg">-{fmt(afaTot + wkTot)}</td></tr>
@@ -5629,9 +5660,9 @@ Erstellt mit ImmoHub · ${new Date().toLocaleDateString('de-DE')}`;
         <label>Jahr:</label>
         <select value={yr} onChange={e => setYr(+e.target.value)}>{years.map(y => <option key={y} value={y}>{y}</option>)}</select>
         <span className="badge">{jsk + 1}. Jahr</span>
-        <button className="btn-export" onClick={() => setShowExport(true)}><span className="btn-export-icon"><IconSteuer color="#6366f1" /></span>Übersicht exportieren</button>
+        <button className="btn-export" onClick={() => setShowExport(true)} disabled={erg === null} style={erg === null ? {opacity:0.4,cursor:'not-allowed'} : {}}><span className="btn-export-icon"><IconSteuer color="#6366f1" /></span>Übersicht exportieren</button>
       </div>
-      <div className={`result-box ${erg >= 0 ? 'pos' : 'neg'}`}>
+      <div className={`result-box ${erg === null ? 'draft' : erg >= 0 ? 'pos' : 'neg'}`}>
         <div className="result-header">
           <span>Steuerliches Ergebnis {yr}</span>
           <div className="info-tooltip">
@@ -5643,8 +5674,13 @@ Erstellt mit ImmoHub · ${new Date().toLocaleDateString('de-DE')}`;
             </div>
           </div>
         </div>
-        <b>{fmtD(erg)}</b>
-        <small>{erg < 0 ? `→ Ersparnis ca. ${fmt(Math.abs(stEff))}` : `→ Steuerlast ca. ${fmt(stEff)}`}</small>
+        {erg !== null ? (<>
+          <b>{fmtD(erg)}</b>
+          <small>{erg < 0 ? `→ Ersparnis ca. ${fmt(Math.abs(stEff))}` : `→ Steuerlast ca. ${fmt(stEff)}`}</small>
+        </>) : (<>
+          <b style={{color:'var(--text-dim)',fontSize:'16px'}}>Werte bestätigen</b>
+          <small style={{color:'var(--text-dim)'}}>Bitte übernommene Vorjahreswerte prüfen und bestätigen</small>
+        </>)}
       </div>
       <div className="accs">
         <Acc icon={<IconAfa color="#f59e0b" />} title="AfA" sum={fmt(afaTot)} open={sec === 'afa'} toggle={() => setSec(sec === 'afa' ? null : 'afa')} color="#f59e0b">
@@ -5657,13 +5693,31 @@ Erstellt mit ImmoHub · ${new Date().toLocaleDateString('de-DE')}`;
           <button className="btn-add" onClick={addWK}>+ Hinzufügen</button>
           {wkTot > 0 && <div className="res hl"><span>WK Gesamt</span><span>{fmt(wkTot)}</span></div>}
         </Acc>
-        <Acc icon={<IconEinnahmen color="#10b981" />} title="Einnahmen" sum={fmt(ein)} open={sec === 'ein'} toggle={() => setSec(sec === 'ein' ? null : 'ein')} color="#10b981">
-          <Input label="Mieteinnahmen" value={yd.miet} onChange={v => setYd('miet', v)} suffix="€" />
-          <Input label="NK-Vorauszahlung" value={yd.nkVor} onChange={v => setYd('nkVor', v)} suffix="€" />
-          <Input label="NK-Nachzahlungen" value={yd.nkNach || 0} onChange={v => setYd('nkNach', v)} suffix="€" />
-          <Input label="NK-Abrechnung" value={yd.nkAbr} onChange={v => setYd('nkAbr', v)} suffix="€" step={0.01} />
-          <p className="hint">NK-Abrechnung: Vorzeichen beachten! + = Nachzahlung an dich, − = Rückzahlung an Mieter</p>
-          <div className="res hl"><span>Einnahmen</span><span className="pos">{fmt(ein)}</span></div>
+        <Acc icon={<IconEinnahmen color="#10b981" />} title="Einnahmen" sum={allConfirmed ? fmt(ein) : '⏳ Prüfen'} open={sec === 'ein'} toggle={() => setSec(sec === 'ein' ? null : 'ein')} color="#10b981">
+          {isDraft && !allConfirmed && (
+            <div className="draft-banner">
+              <span>📋 Werte aus {yr - 1} übernommen — bitte prüfen und bestätigen</span>
+              <button className="btn-confirm-all" onClick={confirmAll}>✓ Alle übernehmen</button>
+            </div>
+          )}
+          <div className={!isFieldConfirmed('miet') ? 'steuer-draft-field' : ''}>
+            <Input label="Mieteinnahmen" value={yd.miet} onChange={v => setYd('miet', v)} suffix="€" className={!isFieldConfirmed('miet') ? 'draft-input' : ''} />
+            {!isFieldConfirmed('miet') && <button className="btn-confirm-field" onClick={() => confirmField('miet')}>✓ Übernehmen</button>}
+          </div>
+          <div className={!isFieldConfirmed('nkVor') ? 'steuer-draft-field' : ''}>
+            <Input label="NK-Vorauszahlung" value={yd.nkVor} onChange={v => setYd('nkVor', v)} suffix="€" className={!isFieldConfirmed('nkVor') ? 'draft-input' : ''} />
+            {!isFieldConfirmed('nkVor') && <button className="btn-confirm-field" onClick={() => confirmField('nkVor')}>✓ Übernehmen</button>}
+          </div>
+          <div className={!isFieldConfirmed('nkNach') ? 'steuer-draft-field' : ''}>
+            <Input label="NK-Nachzahlungen VJ" value={yd.nkNach || 0} onChange={v => setYd('nkNach', v)} suffix="€" className={!isFieldConfirmed('nkNach') ? 'draft-input' : ''} />
+            {!isFieldConfirmed('nkNach') && <button className="btn-confirm-field" onClick={() => confirmField('nkNach')}>✓ Übernehmen</button>}
+          </div>
+          <div className={!isFieldConfirmed('nkAbr') ? 'steuer-draft-field' : ''}>
+            <Input label="NK-Abrechnung" value={yd.nkAbr} onChange={v => setYd('nkAbr', v)} suffix="€" step={0.01} className={!isFieldConfirmed('nkAbr') ? 'draft-input' : ''} />
+            {!isFieldConfirmed('nkAbr') && <button className="btn-confirm-field" onClick={() => confirmField('nkAbr')}>✓ Übernehmen</button>}
+          </div>
+          <p className="hint">NK-Nachzahlungen: Vorzeichen beachten! + = Nachzahlung an dich, − = Rückzahlung an Mieter</p>
+          <div className="res hl"><span>Einnahmen</span><span className={allConfirmed ? 'pos' : ''}>{allConfirmed ? fmt(ein) : '—'}</span></div>
         </Acc>
       </div>
     </div>
@@ -5862,8 +5916,8 @@ const Dashboard = ({ immobilien, onSelectImmo, aktiveBeteiligte = [], beteiligte
   // Berechnung für jede Immobilie
   const immoData = immobilien.map(immo => {
     const s = immo.stammdaten;
-    const kp = (s.kaufpreisImmobilie || 0) + (s.kaufpreisStellplatz || 0);
-    const nk = (s.mehrkosten || 0) + (s.maklerProvision || 0) + (s.grunderwerbsteuer || 0) + (s.notarkosten || 0);
+    const kp = (s.kaufpreisImmobilie || 0) + (s.mehrkosten || 0) + (s.kaufpreisStellplatz || 0);
+    const nk = (s.maklerProvision || 0) + (s.grunderwerbsteuer || 0) + (s.notarkosten || 0);
     const ak = kp + nk;
     // Jahres-Kaltmiete: Kaltmiete + Stellplatz + Sonderausstattung (ohne NK-Vorauszahlung)
     const jm = ((s.kaltmiete || 0) + (s.mieteStellplatz || 0) + (s.mieteSonderausstattung || 0)) * 12;
@@ -7255,6 +7309,20 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
         .result-box{text-align:center;padding:18px;border-radius:8px;margin-bottom:14px;border:1px solid}
         .result-box.pos{background:rgba(34,197,94,0.05);border-color:rgba(34,197,94,0.2)}
         .result-box.neg{background:rgba(239,68,68,0.05);border-color:rgba(239,68,68,0.2)}
+        .result-box.draft{background:rgba(148,163,184,0.05);border-color:rgba(148,163,184,0.2);border-style:dashed}
+        
+        .draft-banner{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 14px;background:rgba(245,158,11,0.08);border:1px dashed rgba(245,158,11,0.3);border-radius:8px;margin-bottom:12px;flex-wrap:wrap}
+        .draft-banner span{color:#f59e0b;font-size:12px}
+        .btn-confirm-all{padding:5px 12px;background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);border-radius:6px;color:#22c55e;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;transition:all 0.15s}
+        .btn-confirm-all:hover{background:rgba(34,197,94,0.2)}
+        
+        .steuer-draft-field{position:relative;display:flex;align-items:center;gap:4px}
+        .steuer-draft-field .irow{flex:1}
+        .steuer-draft-field .irow .ifld{border-style:dashed;border-color:rgba(245,158,11,0.4);background:rgba(245,158,11,0.03)}
+        .steuer-draft-field .irow .ifld input{color:var(--text-dim);opacity:0.5}
+        .steuer-draft-field .irow label{color:var(--text-dim);opacity:0.6}
+        .btn-confirm-field{padding:4px 8px;background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.25);border-radius:6px;color:#22c55e;font-size:10px;cursor:pointer;white-space:nowrap;flex-shrink:0;transition:all 0.15s}
+        .btn-confirm-field:hover{background:rgba(34,197,94,0.2)}
         .result-header{display:flex;align-items:center;justify-content:center;gap:6px;margin-bottom:4px}
         .result-header span{font-size:10px;color:var(--text-dim);text-transform:uppercase}
         .result-box b{font-family:'JetBrains Mono',monospace;font-size:24px;font-weight:700;display:block}
