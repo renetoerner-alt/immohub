@@ -5923,8 +5923,10 @@ const Dashboard = ({ immobilien, onSelectImmo, aktiveBeteiligte = [], beteiligte
     const jm = ((s.kaltmiete || 0) + (s.mieteStellplatz || 0) + (s.mieteSonderausstattung || 0)) * 12;
     const rendite = kp > 0 ? jm / kp : 0;
     const ek = ak * (s.eigenkapitalAnteil / 100);
-    const fk = ak - ek;
-    const ann = fk * ((s.zinssatz + s.tilgung) / 100);
+    const fkTheo = ak - ek; // theoretischer FK-Bedarf
+    const darlehen = immo.darlehen || [];
+    const fk = darlehen.length > 0 ? darlehen.reduce((sum, d) => sum + (d.restschuld || d.betrag || 0), 0) : fkTheo;
+    const ann = fkTheo * ((s.zinssatz + s.tilgung) / 100);
     const gwg = (s.grundstueckGroesse || 0) * (s.bodenrichtwert || 0);
     const ga = s.teileigentumsanteil > 0 ? (s.teileigentumsanteil / 10000) * gwg : 0;
     const afaBasis = ak - ga;
