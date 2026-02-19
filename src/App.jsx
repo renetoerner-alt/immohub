@@ -3909,6 +3909,252 @@ const SmartLoanImportModal = ({ immobilien = [], onClose, onImport }) => {
   );
 };
 
+// ============================================================================
+// PDF EXPORT FUNCTIONS
+// ============================================================================
+
+const exportPrintCSS = `
+  @media print { body{-webkit-print-color-adjust:exact;print-color-adjust:exact} }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:11px;color:#1a1a2e;line-height:1.5;padding:24px}
+  .header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #6366f1;padding-bottom:12px;margin-bottom:20px}
+  .header h1{font-size:18px;color:#1a1a2e;font-weight:700} .header .sub{color:#666;font-size:11px;margin-top:2px}
+  .header .logo{font-size:10px;color:#6366f1;font-weight:600;letter-spacing:1px}
+  .header .date{font-size:9px;color:#999}
+  .section{margin-bottom:16px;break-inside:avoid} .section h2{font-size:13px;color:#6366f1;border-bottom:1px solid #e5e7eb;padding-bottom:4px;margin-bottom:8px}
+  table{width:100%;border-collapse:collapse;font-size:11px} td,th{padding:4px 8px;text-align:left;border-bottom:1px solid #f3f4f6}
+  th{background:#f8f9fa;font-weight:600;color:#374151;font-size:10px;text-transform:uppercase;letter-spacing:0.3px}
+  .val{text-align:right;font-variant-numeric:tabular-nums} .hl{font-weight:600;background:#f0f0ff} .hl td{border-top:1px solid #6366f1}
+  .pos{color:#059669} .neg{color:#dc2626} .dim{color:#999}
+  .badge{display:inline-block;padding:2px 6px;border-radius:3px;font-size:9px;font-weight:600}
+  .badge-green{background:#d1fae5;color:#065f46} .badge-blue{background:#dbeafe;color:#1e40af} .badge-gray{background:#f3f4f6;color:#374151}
+  .summary-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-bottom:20px}
+  .summary-card{background:#f8f9fa;border:1px solid #e5e7eb;border-radius:6px;padding:10px;text-align:center}
+  .summary-card .label{font-size:9px;color:#666;text-transform:uppercase;letter-spacing:0.3px} .summary-card .value{font-size:16px;font-weight:700;color:#1a1a2e}
+  .summary-card .sub{font-size:9px;color:#999}
+  .two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .footer{margin-top:24px;padding-top:8px;border-top:1px solid #e5e7eb;text-align:center;color:#999;font-size:9px}
+  .dl-card{background:#f8f9fa;border:1px solid #e5e7eb;border-radius:6px;padding:10px;margin-bottom:8px;break-inside:avoid}
+  .dl-card h3{font-size:12px;color:#1a1a2e;margin-bottom:4px} .dl-card .dl-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+  .dl-card .dl-item{} .dl-card .dl-item .lbl{font-size:9px;color:#666;text-transform:uppercase} .dl-card .dl-item .val{font-size:11px;font-weight:500}
+`;
+
+const openPrintWindow = (html, title) => {
+  const w = window.open('', '_blank', 'width=900,height=700');
+  if (!w) { alert('Popup blockiert – bitte Popup-Blocker deaktivieren.'); return; }
+  w.document.write(`<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>${title}</title><style>${exportPrintCSS}</style></head><body>${html}</body></html>`);
+  w.document.close();
+  setTimeout(() => w.print(), 400);
+};
+
+const f$ = (v) => new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(v || 0);
+const f$2 = (v) => new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v || 0);
+const fP$ = (v) => new Intl.NumberFormat('de-DE', { style: 'percent', minimumFractionDigits: 2 }).format(v || 0);
+const fD$ = (d) => { if (!d) return '—'; const p = d.split('-'); return p.length === 3 ? `${p[2]}.${p[1]}.${p[0]}` : d; };
+
+const exportSingleImmobilie = (p, c) => {
+  const s = p.stammdaten;
+  const darlehen = p.darlehen || [];
+  const mh = p.miethistorie || [];
+  const sa = s.sonderausstattung || [];
+  const gwg = (s.grundstueckGroesse || 0) * (s.bodenrichtwert || 0);
+  const ga = s.teileigentumsanteil > 0 ? (s.teileigentumsanteil / 10000) * gwg : 0;
+  const restschuld = darlehen.reduce((sum, d) => sum + (d.restschuld || d.betrag || 0), 0);
+  const monatsrate = darlehen.reduce((sum, d) => sum + (d.monatsrate || 0), 0);
+
+  const row = (label, val, cls) => val != null && val !== '' && val !== 0 ? `<tr><td>${label}</td><td class="val ${cls||''}">${val}</td></tr>` : '';
+  const typLabel = TYP_LABELS[s.typ] || s.typ?.toUpperCase() || '—';
+  const blName = BUNDESLAENDER[s.bundesland]?.name || s.bundesland || '—';
+
+  let html = `
+  <div class="header">
+    <div><h1>${s.name || 'Immobilie'}</h1><div class="sub">${typLabel} · ${s.adresse || 'Keine Adresse'}${s.eigentuemer ? ` · ${s.eigentuemer}` : ''}</div></div>
+    <div style="text-align:right"><div class="logo">IMMOHUB</div><div class="date">${new Date().toLocaleDateString('de-DE')} · Datenexport</div></div>
+  </div>
+
+  <div class="summary-grid">
+    <div class="summary-card"><div class="label">Kaufpreis</div><div class="value">${f$(c.kp)}</div><div class="sub">+ ${f$(c.nk)} NK</div></div>
+    <div class="summary-card"><div class="label">Jahresmiete</div><div class="value pos">${f$(c.jm)}</div><div class="sub">${f$(c.mm)}/Mon.</div></div>
+    <div class="summary-card"><div class="label">Rendite</div><div class="value">${fP$(c.rendite)}</div><div class="sub">Brutto</div></div>
+    <div class="summary-card"><div class="label">Verbindlichkeiten</div><div class="value">${f$(restschuld)}</div><div class="sub">${darlehen.length} Darlehen</div></div>
+    <div class="summary-card"><div class="label">AfA</div><div class="value">${f$(c.afaGes)}</div><div class="sub">pro Jahr</div></div>
+    <div class="summary-card"><div class="label">Fläche</div><div class="value">${s.wohnflaeche || 0} qm</div><div class="sub">${s.wohnflaeche > 0 ? f$(c.kp / s.wohnflaeche) + '/qm' : '—'}</div></div>
+  </div>
+
+  <div class="two-col">
+    <div class="section"><h2>Objektdaten</h2><table>
+      ${row('Name', s.name)}${row('Typ', typLabel)}${row('Adresse', s.adresse)}
+      ${row('Projekt', s.projekt)}${row('Eigentümer', s.eigentuemer)}
+      ${row('Nutzung', s.nutzung === 'vermietet' ? 'Vermietet' : 'Eigengenutzt')}
+      ${row('Status', s.objektstatus === 'neubau' ? 'Neubau' : 'Bestand')}
+      ${row('Bundesland', blName)}${row('Kaufdatum', fD$(s.kaufdatum))}${row('Baujahr', s.baujahr)}
+      ${row('Wohnungs-Nr.', s.wohnungsNr)}${row('Etage', s.etage)}${row('Vermietete Fläche', s.wohnflaeche ? s.wohnflaeche + ' qm' : null)}
+    </table></div>
+
+    <div class="section"><h2>Kaufpreis & Anschaffungskosten</h2><table>
+      ${row('Kaufpreis Immobilie', f$(s.kaufpreisImmobilie))}
+      ${row('Mehrkosten', f$(s.mehrkosten))}
+      ${row('Kaufpreis Stellplatz', f$(s.kaufpreisStellplatz))}
+      <tr class="hl"><td><b>= Kaufpreis</b></td><td class="val"><b>${f$(c.kp)}</b></td></tr>
+      ${row('Makler', f$(s.maklerProvision))}
+      ${row('Grunderwerbsteuer', f$(s.grunderwerbsteuer))}
+      ${row('Notar', f$(s.notarkosten))}
+      <tr class="hl"><td><b>= Anschaffungskosten</b></td><td class="val"><b>${f$(c.ak)}</b></td></tr>
+      ${row('Verkehrswert', s.verkehrswert ? f$(s.verkehrswert) : null)}
+      ${row('Bewertungsdatum', fD$(s.verkehrswertDatum))}
+    </table></div>
+  </div>
+
+  <div class="two-col">
+    <div class="section"><h2>Grundstück & AfA</h2><table>
+      ${row('Grundstücksgröße', s.grundstueckGroesse ? s.grundstueckGroesse + ' qm' : null)}
+      ${row('Bodenrichtwert', s.bodenrichtwert ? f$(s.bodenrichtwert) + '/qm' : null)}
+      ${row('Grundstückswert', gwg > 0 ? f$(gwg) : null)}
+      ${row('TEA', s.teileigentumsanteil ? s.teileigentumsanteil + '/10.000' : null)}
+      ${row('Grundstücksanteil', ga > 0 ? f$(ga) : null)}
+      ${row('AfA-Basis (Gebäude)', f$(c.afaBasis))}
+      ${row('AfA-Satz', s.afaSatz ? s.afaSatz + '%' : null)}
+      ${row('AfA Gebäude', f$(c.afaGeb))}
+      ${sa.length > 0 ? row('AfA Sonderausst.', f$(c.afaSA)) : ''}
+      <tr class="hl"><td><b>AfA Gesamt</b></td><td class="val"><b>${f$(c.afaGes)}/Jahr</b></td></tr>
+    </table></div>
+
+    <div class="section"><h2>Mietdaten</h2><table>
+      ${s.nutzung === 'eigengenutzt' ? '<tr><td colspan="2"><em>Eigengenutzt</em></td></tr>' : `
+        ${row('Mieter', s.mieterName)}
+        ${row('Status', s.mietstatusAktiv === false ? '<span class="badge badge-gray">Leerstand</span>' : '<span class="badge badge-green">Vermietet</span>')}
+        ${row('Mietbeginn', fD$(s.mietbeginn))}${row('Mietende', fD$(s.mietende))}
+        ${row('Kaltmiete', s.kaltmiete ? f$(s.kaltmiete) + '/Mon.' : null)}
+        ${row('NK-Vorauszahlung', s.nebenkostenVorauszahlung ? f$(s.nebenkostenVorauszahlung) + '/Mon.' : null)}
+        ${row('Stellplatz', s.mieteStellplatz ? f$(s.mieteStellplatz) + '/Mon.' : null)}
+        ${row('Sonderausst.', s.mieteSonderausstattung ? f$(s.mieteSonderausstattung) + '/Mon.' : null)}
+        <tr class="hl"><td><b>Gesamtmiete</b></td><td class="val pos"><b>${f$((s.kaltmiete||0)+(s.nebenkostenVorauszahlung||0)+(s.mieteStellplatz||0)+(s.mieteSonderausstattung||0))}/Mon.</b></td></tr>
+        <tr class="hl"><td><b>Jahres-Kaltmiete</b></td><td class="val pos"><b>${f$(c.jm)}</b></td></tr>
+        ${s.wohnflaeche > 0 ? row('→ pro qm', f$2(((s.kaltmiete||0)+(s.mieteStellplatz||0)+(s.mieteSonderausstattung||0)) / s.wohnflaeche) + '/qm', 'pos') : ''}
+      `}
+    </table></div>
+  </div>`;
+
+  // Finanzierung / EK
+  html += `<div class="section"><h2>Finanzierung</h2><table>
+    ${row('Eigenkapitalanteil', s.eigenkapitalAnteil ? s.eigenkapitalAnteil + '%' : null)}
+    ${row('EK-Betrag', s.eigenkapitalBetrag ? f$(s.eigenkapitalBetrag) : null)}
+    ${row('Eigenleistung', s.eigenleistung ? f$(s.eigenleistung) : null)}
+    ${row('KfW-Zuschuss', s.kfwZuschuss ? f$(s.kfwZuschuss) : null)}
+    ${row('BAFA-Förderung', s.bafaFoerderung ? f$(s.bafaFoerderung) : null)}
+  </table></div>`;
+
+  // Darlehen
+  if (darlehen.length > 0) {
+    html += `<div class="section"><h2>Darlehen (${darlehen.length})</h2>`;
+    for (const d of darlehen) {
+      html += `<div class="dl-card"><h3>${d.name || 'Darlehen'}${d.institut ? ` · ${d.institut}` : ''}</h3><div class="dl-grid">
+        ${d.betrag ? `<div class="dl-item"><div class="lbl">Darlehensbetrag</div><div class="val">${f$(d.betrag)}</div></div>` : ''}
+        ${d.restschuld ? `<div class="dl-item"><div class="lbl">Restschuld</div><div class="val">${f$(d.restschuld)}</div></div>` : ''}
+        ${d.zinssatz ? `<div class="dl-item"><div class="lbl">Zinssatz</div><div class="val">${d.zinssatz}%</div></div>` : ''}
+        ${d.tilgung ? `<div class="dl-item"><div class="lbl">Tilgung</div><div class="val">${d.tilgung}%</div></div>` : ''}
+        ${d.monatsrate ? `<div class="dl-item"><div class="lbl">Monatsrate</div><div class="val">${f$(d.monatsrate)}</div></div>` : ''}
+        ${d.zinsbindungEnde ? `<div class="dl-item"><div class="lbl">Zinsbindung bis</div><div class="val">${fD$(d.zinsbindungEnde)}</div></div>` : ''}
+        ${d.kontonummer ? `<div class="dl-item"><div class="lbl">Kontonummer</div><div class="val">${d.kontonummer}</div></div>` : ''}
+        ${d.sondertilgung ? `<div class="dl-item"><div class="lbl">Sondertilgung</div><div class="val">${d.sondertilgung}%</div></div>` : ''}
+        ${d.abschluss ? `<div class="dl-item"><div class="lbl">Abschluss</div><div class="val">${fD$(d.abschluss)}</div></div>` : ''}
+      </div></div>`;
+    }
+    html += `<table><tr class="hl"><td><b>Gesamt Restschuld</b></td><td class="val"><b>${f$(restschuld)}</b></td></tr>
+      <tr class="hl"><td><b>Gesamt Monatsrate</b></td><td class="val"><b>${f$(monatsrate)}</b></td></tr></table></div>`;
+  }
+
+  // Sonderausstattung
+  if (sa.length > 0 && sa.some(i => i.bezeichnung || i.betrag)) {
+    html += `<div class="section"><h2>Sonderausstattung</h2><table><tr><th>Bezeichnung</th><th class="val">Betrag</th><th class="val">AfA (10%)</th></tr>`;
+    for (const item of sa) { if (item.bezeichnung || item.betrag) html += `<tr><td>${item.bezeichnung || '—'}</td><td class="val">${f$(item.betrag)}</td><td class="val">${f$((item.betrag||0)*0.1)}/J.</td></tr>`; }
+    html += `</table></div>`;
+  }
+
+  // Miethistorie
+  if (mh.length > 0) {
+    html += `<div class="section"><h2>Miethistorie</h2><table><tr><th>Mieter</th><th>Von</th><th>Bis</th><th class="val">Miete</th><th>Grund</th></tr>`;
+    for (const m of mh) { html += `<tr><td>${m.mieter || '—'}</td><td>${fD$(m.von)}</td><td>${fD$(m.bis) || '—'}</td><td class="val">${f$(m.miete)}/Mon.</td><td>${m.grund || '—'}</td></tr>`; }
+    html += `</table></div>`;
+  }
+
+  html += `<div class="footer">Erstellt mit ImmoHub · ${new Date().toLocaleDateString('de-DE')} · Alle Angaben ohne Gewähr</div>`;
+  openPrintWindow(html, `ImmoHub – ${s.name || 'Immobilie'}`);
+};
+
+const exportPortfolio = (filtered, totals, avgRendite) => {
+  const f = f$, fp = fP$;
+  let html = `
+  <div class="header">
+    <div><h1>Portfolio-Übersicht</h1><div class="sub">${filtered.length} Immobilien · Stand ${new Date().toLocaleDateString('de-DE')}</div></div>
+    <div style="text-align:right"><div class="logo">IMMOHUB</div><div class="date">Datenexport</div></div>
+  </div>
+
+  <div class="summary-grid">
+    <div class="summary-card"><div class="label">Immobilien</div><div class="value">${filtered.length}</div></div>
+    <div class="summary-card"><div class="label">Kaufpreise</div><div class="value">${f(totals.kp)}</div><div class="sub">Ø ${f(totals.kp / Math.max(filtered.length, 1))}</div></div>
+    <div class="summary-card"><div class="label">Jahresmiete</div><div class="value pos">${f(totals.jm)}</div><div class="sub">${f(totals.jm / 12)}/Mon.</div></div>
+    <div class="summary-card"><div class="label">Ø Rendite</div><div class="value">${fp(avgRendite)}</div><div class="sub">Brutto</div></div>
+    <div class="summary-card"><div class="label">Verbindlichkeiten</div><div class="value">${f(totals.fk)}</div></div>
+    <div class="summary-card"><div class="label">AfA Gesamt</div><div class="value">${f(totals.afaGes)}</div><div class="sub">pro Jahr</div></div>
+    <div class="summary-card"><div class="label">Gesamtfläche</div><div class="value">${totals.qm.toLocaleString('de-DE')} qm</div><div class="sub">Ø ${f(totals.kp / Math.max(totals.qm, 1))}/qm</div></div>
+  </div>
+
+  <div class="section">
+    <h2>Immobilien im Überblick</h2>
+    <table>
+      <tr><th>Name</th><th>Typ</th><th>Adresse</th><th class="val">Fläche</th><th class="val">Kaufpreis</th><th class="val">Jahresmiete</th><th class="val">Rendite</th><th class="val">Verbindl.</th><th class="val">AfA/Jahr</th></tr>`;
+
+  for (const i of filtered) {
+    const s = i.stammdaten;
+    const typLabel = TYP_LABELS[s.typ] || s.typ?.toUpperCase() || '—';
+    html += `<tr>
+      <td><b>${s.name || '—'}</b></td>
+      <td><span class="badge badge-blue">${typLabel}</span></td>
+      <td>${s.adresse || '—'}</td>
+      <td class="val">${i.wohnflaeche || 0} qm</td>
+      <td class="val">${f(i.kp)}</td>
+      <td class="val pos">${f(i.jm)}</td>
+      <td class="val">${fp(i.rendite)}</td>
+      <td class="val">${f(i.fk)}</td>
+      <td class="val">${f(i.afaGes)}</td>
+    </tr>`;
+  }
+
+  html += `<tr class="hl">
+    <td><b>Gesamt (${filtered.length})</b></td><td></td><td></td>
+    <td class="val"><b>${totals.qm.toLocaleString('de-DE')} qm</b></td>
+    <td class="val"><b>${f(totals.kp)}</b></td>
+    <td class="val pos"><b>${f(totals.jm)}</b></td>
+    <td class="val"><b>${fp(avgRendite)}</b></td>
+    <td class="val"><b>${f(totals.fk)}</b></td>
+    <td class="val"><b>${f(totals.afaGes)}</b></td>
+  </tr></table></div>`;
+
+  // Einzelübersicht pro Immobilie
+  html += `<div class="section"><h2>Detailübersicht</h2>`;
+  for (const i of filtered) {
+    const s = i.stammdaten;
+    const dl = i.darlehen || [];
+    const rs = dl.reduce((sum, d) => sum + (d.restschuld || d.betrag || 0), 0);
+    html += `<div class="dl-card"><h3>${s.name || '—'}${s.adresse ? ` · ${s.adresse}` : ''}</h3><div class="dl-grid">
+      <div class="dl-item"><div class="lbl">Kaufpreis</div><div class="val">${f(i.kp)}</div></div>
+      <div class="dl-item"><div class="lbl">Jahresmiete</div><div class="val pos">${f(i.jm)}</div></div>
+      <div class="dl-item"><div class="lbl">Rendite</div><div class="val">${fp(i.rendite)}</div></div>
+      <div class="dl-item"><div class="lbl">Fläche</div><div class="val">${i.wohnflaeche || 0} qm</div></div>
+      <div class="dl-item"><div class="lbl">Verbindlichkeiten</div><div class="val">${f(rs)}</div></div>
+      <div class="dl-item"><div class="lbl">AfA/Jahr</div><div class="val">${f(i.afaGes)}</div></div>
+      ${s.mieterName ? `<div class="dl-item"><div class="lbl">Mieter</div><div class="val">${s.mieterName}</div></div>` : ''}
+      ${dl.length > 0 ? `<div class="dl-item"><div class="lbl">Darlehen</div><div class="val">${dl.length}× · ${f(dl.reduce((s,d) => s + (d.monatsrate||0), 0))}/Mon.</div></div>` : ''}
+      ${s.nutzung ? `<div class="dl-item"><div class="lbl">Nutzung</div><div class="val">${s.nutzung === 'vermietet' ? 'Vermietet' : 'Eigengenutzt'}</div></div>` : ''}
+    </div></div>`;
+  }
+  html += `</div>`;
+
+  html += `<div class="footer">Erstellt mit ImmoHub · ${new Date().toLocaleDateString('de-DE')} · Alle Angaben ohne Gewähr</div>`;
+  openPrintWindow(html, 'ImmoHub – Portfolio-Übersicht');
+};
+
 // Stammdaten
 const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, validationErrors = {}, beteiligte = [], immobilien = [], onSmartImport }) => {
   const [sec, setSec] = useState(null);
@@ -5096,6 +5342,14 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
           <p className="import-hint">Immobilienexposé, Darlehensvertrag, etc. hochladen und Daten automatisch auslesen</p>
         </div>
       )}
+      
+      {/* PDF Export Button */}
+      <div style={{padding:'16px',borderTop:'1px solid var(--border)',marginTop:'8px'}}>
+        <button className="btn-export-data" onClick={() => exportSingleImmobilie(p, c)} style={{width:'100%'}}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10,9 9,9 8,9"/></svg>
+          Als PDF exportieren
+        </button>
+      </div>
       
       {/* Darlehen Import Modal */}
       {darlehenImportModal && (
@@ -6505,6 +6759,14 @@ const Dashboard = ({ immobilien, onSelectImmo, aktiveBeteiligte = [], beteiligte
           </tfoot>
         </table>
         </div>
+      </div>
+
+      {/* Portfolio PDF Export */}
+      <div style={{padding:'16px 0',marginTop:'8px'}}>
+        <button className="btn-export-data" onClick={() => exportPortfolio(filtered, totals, avgRendite)} style={{width:'100%'}}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10,9 9,9 8,9"/></svg>
+          Portfolio als PDF exportieren ({filtered.length} Immobilien)
+        </button>
       </div>
     </div>
   );
