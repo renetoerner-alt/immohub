@@ -7007,12 +7007,16 @@ const Dashboard = ({ immobilien, onSelectImmo, aktiveBeteiligte = [], beteiligte
           >
             <div className="dic-header">
               <span className="dic-type-tag" style={{ background: TYP_COLORS[i.stammdaten.typ]?.bg, borderColor: TYP_COLORS[i.stammdaten.typ]?.border, color: TYP_COLORS[i.stammdaten.typ]?.text }}>{getTypLabel(i.stammdaten.typ)}</span>
-              {i.isContainer && (<span className="dic-type-tag" style={{ background: 'rgba(99,102,241,0.12)', borderColor: '#6366f1', color: '#818cf8', marginLeft: '6px' }}>🏢 {immobilien.filter(x => x.parentId === i.id).length} Wohnungen{i.stammdaten.wohnflaeche > 0 ? ' · ' + Number(i.stammdaten.wohnflaeche).toLocaleString('de-DE', { maximumFractionDigits: 2 }) + ' m²' : ''}</span>)}
               <div className="dic-title">
                 <strong>{i.stammdaten.name}</strong>
                 <small>{i.stammdaten.adresse || 'Keine Adresse'}</small>
               </div>
             </div>
+            {i.isContainer && (
+              <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', marginBottom: '8px', padding: '5px 10px', background: 'rgba(99,102,241,0.12)', border: '1px solid #6366f1', borderRadius: '6px', color: '#818cf8', fontSize: '11px', fontWeight: 600 }}>
+                🏢 {immobilien.filter(x => x.parentId === i.id).length} Wohnungen{i.stammdaten.wohnflaeche > 0 ? ' · ' + Number(i.stammdaten.wohnflaeche).toLocaleString('de-DE', { maximumFractionDigits: 2 }) + ' m²' : ''}
+              </div>
+            )}
             {(i.importiert && i.zuPruefen?.length > 0) || i.zinsbindungWarning ? (
               <div className="dic-badges-row">
                 {i.importiert && i.zuPruefen?.length > 0 && (
