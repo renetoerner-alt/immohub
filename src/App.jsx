@@ -885,6 +885,9 @@ const createEmpty = () => ({
   darlehen: [], // Array von { name, betrag, zinssatz, tilgung, abschluss, zinsbindungEnde, typ }
   miethistorie: [], // Array von { datum, mieteAlt, mieteNeu, grund }
   erinnerungen: [], // Array von { datum, titel, beschreibung, erledigt }
+  // === Hierarchie (Hybrid-Modell, eingeführt v7.7) ===
+  isContainer: false, // true = Gebäude (z.B. MFH) mit Einheiten darunter
+  parentId: null,     // null = eigenständig oder Container; sonst ID des übergeordneten Gebäudes
   stammdaten: {
     name: '', adresse: '', projekt: '', typ: 'etw', bundesland: 'hessen',
     objektstatus: 'neubau',
@@ -926,6 +929,23 @@ const createEmpty = () => ({
     darlehenAbschluss: new Date().toISOString().split('T')[0],
     tilgungsbeginn: new Date().toISOString().split('T')[0],
     sonderausstattung: [], steuersatz: 42,
+    // === Eigentumsart (v7.7) ===
+    eigentumsart: 'weg', // 'weg' = WEG-Teileigentum (aufgeteilt), 'gesamt' = Gesamteigentum (MFH nicht aufgeteilt)
+    // === Erbbaurecht (v7.7) ===
+    erbbaurecht: false,        // true = Grundstück im Erbbaurecht (gehört nicht dem Käufer)
+    erbbauzins: 0,             // jährlicher Erbbauzins in € (steuerlich Werbungskosten)
+    erbbauLaufzeitEnde: '',    // Datum/Jahr, bis wann der Erbbaurechtsvertrag läuft
+    // === Energieausweis (v7.7) ===
+    energietraeger: '',        // gas | oel | fernwaerme | waermepumpe | strom | pellets | holz | sonstige
+    energieausweisArt: '',     // bedarf | verbrauch
+    energiekennwert: 0,        // kWh/(m²·a)
+    energieeffizienzklasse: '',// A+ ... H
+    energieausweisGueltigBis: '',
+    // === Ausbaureserve / Entwicklungspotenzial (v7.7) ===
+    ausbaureserveFlaeche: 0,   // qm zusätzliche Potenzialfläche (z.B. DG-Ausbau)
+    ausbaureserveBeschreibung: '',
+    // === Personenzahl (relevant für Einheiten/NK-Abrechnung, v7.7) ===
+    personenzahl: 0,
   },
   rendite: { mietanpassung: 2, kostenProzent: 6, instandhaltung: 12, mietausfall: 4 },
   steuerJahre: {},
@@ -941,14 +961,17 @@ const useCalc = (s) => useMemo(() => {
   const nk = (s.maklerProvision || 0) + (s.grunderwerbsteuer || 0) + (s.notarkosten || 0);
   const ak = kp + nk;
   const gwg = (s.grundstueckGroesse || 0) * (s.bodenrichtwert || 0);
-  const ga = s.teileigentumsanteil > 0 ? (s.teileigentumsanteil / 10000) * gwg : 0;
+  const ga = s.erbbaurecht ? 0 : (s.eigentumsart === 'gesamt' ? gwg : (s.teileigentumsanteil > 0 ? (s.teileigentumsanteil / 10000) * gwg : 0));
   const afaBasis = ak - ga;
   const afaGeb = afaBasis * ((s.afaSatz || 3) / 100);
   const saSumme = s.sonderausstattung?.reduce((a, i) => a + (i.betrag || 0), 0) || 0;
   const afaSA = s.sonderausstattung?.reduce((a, i) => a + ((i.betrag || 0) * 0.1), 0) || 0;
   // Jahres-Kaltmiete: Kaltmiete + Stellplatz + Sonderausstattung (ohne NK-Vorauszahlung)
   const jm = ((s.kaltmiete || 0) + (s.mieteStellplatz || 0) + (s.mieteSonderausstattung || 0)) * 12;
-  return { kp, nk, ak, gwg, ga, afaBasis, afaGeb, saSumme, afaSA, afaGes: afaGeb + afaSA, jm, mm: jm / 12, rendite: kp > 0 ? jm / kp : 0 };
+  // Kaufpreisfaktor (Vervielfältiger) = Kaufpreis / Jahresnettokaltmiete; Erbbauzins als Werbungskosten
+  const kaufpreisfaktor = jm > 0 ? kp / jm : 0;
+  const erbbauzinsWK = s.erbbaurecht ? (s.erbbauzins || 0) : 0;
+  return { kp, nk, ak, gwg, ga, afaBasis, afaGeb, saSumme, afaSA, afaGes: afaGeb + afaSA, jm, mm: jm / 12, rendite: kp > 0 ? jm / kp : 0, kaufpreisfaktor, erbbauzinsWK };
 }, [s]);
 
 // Formatierte Zahl mit Tausender-Trennzeichen
@@ -1273,16 +1296,24 @@ const Modal = ({ items, onSelect, onNew, onClose, onDel, onOpenImport, onDuplica
             <div className="empty"><span className="empty-icon"><IconConstruction color="#6366f1" /></span><p>Noch keine Immobilien gespeichert</p></div>
           ) : (
             <div className="immo-list">
-              {items.map(i => (
-                <div key={i.id} className="immo-card" onClick={() => onSelect(i)} style={{ borderLeftColor: TYP_COLORS[i.stammdaten.typ]?.border }}>
+              {items.filter(i => !i.parentId).map(i => (
+                <div key={i.id} className="immo-card" onClick={() => onSelect(i)} style={{ borderLeftColor: i.isContainer ? '#6366f1' : TYP_COLORS[i.stammdaten.typ]?.border, borderLeftWidth: i.isContainer ? '5px' : '3px' }}>
                   <div className="immo-info">
                     <div className="immo-name">
-                      <span className="immo-typ-tag" style={{ background: TYP_COLORS[i.stammdaten.typ]?.bg, borderColor: TYP_COLORS[i.stammdaten.typ]?.border, color: TYP_COLORS[i.stammdaten.typ]?.text }}>{getTypLabel(i.stammdaten.typ)}</span>
+                      {i.isContainer ? (
+                        <span className="immo-typ-tag" style={{ background: 'rgba(99,102,241,0.18)', borderColor: '#6366f1', color: '#818cf8', marginRight: '8px' }}>🏢 GEBÄUDE</span>
+                      ) : (
+                        <span className="immo-typ-tag" style={{ background: TYP_COLORS[i.stammdaten.typ]?.bg, borderColor: TYP_COLORS[i.stammdaten.typ]?.border, color: TYP_COLORS[i.stammdaten.typ]?.text }}>{getTypLabel(i.stammdaten.typ)}</span>
+                      )}
                       {i.stammdaten.name}
                       {i.importiert && i.zuPruefen?.length > 0 && <span className="review-badge"><span className="review-badge-icon"><IconWarning color="#f59e0b" /></span>{i.zuPruefen.length} zu prüfen</span>}
                     </div>
                     <div className="immo-addr">{i.stammdaten.adresse || 'Keine Adresse'}</div>
-                    <div className="immo-meta">{i.stammdaten.wohnflaeche} qm · {fmt(i.stammdaten.kaufpreisImmobilie)}</div>
+                    <div className="immo-meta">
+                      {i.isContainer
+                        ? `${(items.filter(x => x.parentId === i.id).length)} Einheit(en) · ${fmt(i.stammdaten.kaufpreisImmobilie)}`
+                        : `${i.stammdaten.wohnflaeche} qm · ${fmt(i.stammdaten.kaufpreisImmobilie)}`}
+                    </div>
                   </div>
                   <div className="immo-actions">
                     <button className="dup-sm" onClick={e => { e.stopPropagation(); onDuplicate(i); }} title="Duplizieren"><IconCopy color="#6366f1" /></button>
@@ -1578,97 +1609,7 @@ const ParsedImmoCard = ({ immo, idx, total, formatFieldName, formatValue, handle
 };
 
 // Import Modal mit echter KI-Dokumentenanalyse
-const ImportModal = ({ onClose, onImport, existingImmo = null }) => {
-  const [files, setFiles] = useState([]);
-  const [currentFileIndex, setCurrentFileIndex] = useState(0);
-  const [preview, setPreview] = useState(null);
-  const [base64Data, setBase64Data] = useState(null);
-  const [parsing, setParsing] = useState(false);
-  const [parsedData, setParsedData] = useState(null);
-  const [allParsedData, setAllParsedData] = useState([]);
-  const [error, setError] = useState(null);
-  const [mergeMode, setMergeMode] = useState(false);
-  const [mergeDecisions, setMergeDecisions] = useState({});
-  const [documentType, setDocumentType] = useState(null);
-  const [processingStatus, setProcessingStatus] = useState(null); // 'processing', 'done', null
-  const fileInputRef = React.useRef(null);
-
-  const handleFileSelect = (e) => {
-    const selectedFiles = Array.from(e.target.files);
-    if (selectedFiles.length > 0) {
-      setFiles(selectedFiles);
-      setCurrentFileIndex(0);
-      setAllParsedData([]);
-      processFile(selectedFiles[0]);
-    }
-  };
-
-  const processFile = async (selectedFile) => {
-    setError(null);
-    setParsedData(null);
-    setMergeMode(false);
-    setMergeDecisions({});
-    setDocumentType(null);
-    
-    try {
-      // Datei komprimieren/vorbereiten
-      const prepared = await prepareFileForUpload(selectedFile);
-      setBase64Data(prepared.base64);
-      
-      // Warnung bei großen Dateien anzeigen
-      if (prepared.warning) {
-        console.warn(prepared.warning);
-      }
-      
-      // Preview für Bilder
-      if (selectedFile.type.startsWith('image/')) {
-        setPreview('data:' + (prepared.mimeType || selectedFile.type) + ';base64,' + prepared.base64);
-      } else {
-        setPreview(null);
-      }
-      
-      // Info über Komprimierung (optional)
-      if (prepared.compressedSize && prepared.originalSize > prepared.compressedSize) {
-        console.log(`Datei komprimiert: ${(prepared.originalSize / 1024).toFixed(0)} KB → ${(prepared.compressedSize / 1024).toFixed(0)} KB`);
-      }
-    } catch (err) {
-      console.error('Fehler beim Verarbeiten der Datei:', err);
-      setError('Fehler beim Verarbeiten der Datei: ' + err.message);
-    }
-  };
-
-  const handleDrop = (e) => {
-    e.preventDefault();
-    const droppedFiles = Array.from(e.dataTransfer.files);
-    if (droppedFiles.length > 0) {
-      setFiles(droppedFiles);
-      setCurrentFileIndex(0);
-      setAllParsedData([]);
-      processFile(droppedFiles[0]);
-    }
-  };
-
-  const currentFile = files[currentFileIndex];
-
-  const getMediaType = () => {
-    if (!currentFile) return null;
-    if (currentFile.type === 'application/pdf') return 'application/pdf';
-    if (currentFile.type === 'image/png') return 'image/png';
-    if (currentFile.type === 'image/jpeg') return 'image/jpeg';
-    if (currentFile.type === 'image/webp') return 'image/webp';
-    return currentFile.type;
-  };
-
-  const parseDocument = async () => {
-    if (!currentFile || !base64Data) return;
-    setParsing(true);
-    setError(null);
-    setProcessingStatus('processing');
-    
-    const mediaType = getMediaType();
-    const isPDF = mediaType === 'application/pdf';
-    
-    const systemPrompt = `Du bist ein Experte für die Analyse von Immobiliendokumenten. 
+const IMMO_DOC_PROMPT = `Du bist ein Experte für die Analyse von Immobiliendokumenten. 
 Analysiere das Dokument und extrahiere alle relevanten Daten.
 
 SCHRITT 1: Erkenne den Dokumenttyp:
@@ -1739,6 +1680,17 @@ Format:
     "afaSatz": 3,
     "grundstueckGroesse": 500,
     "bodenrichtwert": 150,
+    "personenzahl": 2,
+    "eigentumsart": "weg",
+    "erbbaurecht": false,
+    "erbbauzins": 0,
+    "energietraeger": "Erdgas",
+    "energieausweisArt": "verbrauch",
+    "energiekennwert": 105.4,
+    "energieeffizienzklasse": "D",
+    "energieausweisGueltigBis": "YYYY-MM-DD",
+    "ausbaureserveFlaeche": 0,
+    "ausbaureserveBeschreibung": "",
     "darlehen": [{
       "name": "Hauptdarlehen",
       "institut": "Sparkasse",
@@ -1787,210 +1739,292 @@ Wichtig:
 - Bei Darlehen-Liste ohne direkte Immobilien-Infos: Nutze "darlehen_ohne_zuordnung" mit "immobilienNr" zur späteren Zuordnung
 - Bei Immobilien-Liste mit Finanzierungsinfos: Packe die Darlehen direkt ins "darlehen" Array der jeweiligen Immobilie
 - Bei MEHREREN Einträgen: JEDER als separates Objekt im jeweiligen Array!
+WICHTIG - ENERGIEAUSWEIS:
+- "energieausweisArt": "verbrauch" (Verbrauchsausweis: "Erfasster Energieverbrauch", "Energieverbrauchskennwert") oder "bedarf" (Bedarfsausweis: "Energiebedarf", "Endenergiebedarf")
+- "energiekennwert": der Endenergie-Wert in kWh/(m²·a) (NICHT der Primärenergiewert!). Beispiel: "Endenergieverbrauch 105,4 kWh/(m²·a)" -> 105.4
+- "energieeffizienzklasse": die Klasse A+/A/B/C/D/E/F/G (der markierte Buchstabe auf der Farbskala)
+- "energietraeger": z.B. Erdgas, Heizöl, Fernwärme, Wärmepumpe, Strom, Pellets (aus "Energieträger"/Heizung)
+- "energieausweisGueltigBis": falls ein Ausstellungsdatum genannt ist, plus 10 Jahre rechnen; falls "gültig bis" direkt genannt, dieses übernehmen
+
+WICHTIG - WEITERE FELDER:
+- "personenzahl": Anzahl der Personen im Haushalt/in der Wohnung, falls genannt
+- "eigentumsart": "gesamt" wenn es ein ungeteiltes MFH/Gesamteigentum ist (kein Teileigentum, ein Grundbuchblatt), sonst "weg" (Eigentumswohnung mit Teilungserklärung)
+- "erbbaurecht": true wenn das Grundstück im Erbbaurecht ist (Erbbauzins), sonst false; "erbbauzins": jährlicher Erbbauzins in EUR
+- "ausbaureserveFlaeche"/"ausbaureserveBeschreibung": Ausbaureserve/Entwicklungspotenzial (z.B. "DG-Ausbau ca. 146 qm möglich")
 - "gefundeneFelder" enthält die Namen aller extrahierten Felder`;
 
+const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten = [] }) => {
+  const [files, setFiles] = useState([]);
+  const [currentFileIndex, setCurrentFileIndex] = useState(0);
+  const [preview, setPreview] = useState(null);
+  const [base64Data, setBase64Data] = useState(null);
+  const [parsing, setParsing] = useState(false);
+  const [parsedData, setParsedData] = useState(null);
+  const [allParsedData, setAllParsedData] = useState([]);
+  const [error, setError] = useState(null);
+  const [mergeMode, setMergeMode] = useState(false);
+  const [mergeDecisions, setMergeDecisions] = useState({});
+  const [documentType, setDocumentType] = useState(null);
+  const [processingStatus, setProcessingStatus] = useState(null); // 'processing', 'done', null
+  const fileInputRef = React.useRef(null);
+
+  const addFiles = (newOnes) => {
+    if (!newOnes || newOnes.length === 0) return;
+    const wasEmpty = files.length === 0;
+    setFiles(prev => [...prev, ...newOnes]);
+    if (wasEmpty) {
+      setCurrentFileIndex(0);
+      setAllParsedData([]);
+      processFile(newOnes[0]);
+    }
+  };
+
+  const clearFiles = () => {
+    setFiles([]);
+    setCurrentFileIndex(0);
+    setAllParsedData([]);
+    setPreview(null);
+    setBase64Data(null);
+    setError(null);
+    setProcessingStatus(null);
+  };
+
+  const handleFileSelect = (e) => {
+    addFiles(Array.from(e.target.files));
+    e.target.value = '';
+  };
+
+  const processFile = async (selectedFile) => {
+    setError(null);
+    setParsedData(null);
+    setMergeMode(false);
+    setMergeDecisions({});
+    setDocumentType(null);
+    
     try {
-      const fullPrompt = systemPrompt + "\n\nAnalysiere dieses Dokument. Erkenne den Dokumenttyp, extrahiere alle Immobilien- und Darlehensdaten. Achte auf laufende Nummern zur Zuordnung. Antworte nur mit JSON.";
-
-      const response = await fetch("/api/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          image: base64Data,
-          mimeType: mediaType,
-          systemPrompt: fullPrompt
-        })
-      });
-
-      if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.error || `API Fehler: ${response.status}`);
-      }
-
-      const data = await response.json();
-      const textContent = data.text || '';
+      // Datei komprimieren/vorbereiten
+      const prepared = await prepareFileForUpload(selectedFile);
+      setBase64Data(prepared.base64);
       
-      // Prüfen ob Antwort leer
-      if (!textContent) {
-        throw new Error('Keine Antwort vom Server erhalten.');
+      // Warnung bei großen Dateien anzeigen
+      if (prepared.warning) {
+        console.warn(prepared.warning);
       }
       
-      // JSON aus der Antwort extrahieren
-      let jsonStr = textContent.trim();
-      // Falls in Markdown Code-Block
-      if (jsonStr.includes('```')) {
-        jsonStr = jsonStr.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+      // Preview für Bilder
+      if (selectedFile.type.startsWith('image/')) {
+        setPreview('data:' + (prepared.mimeType || selectedFile.type) + ';base64,' + prepared.base64);
+      } else {
+        setPreview(null);
       }
       
-      // Versuche JSON zu reparieren wenn es abgeschnitten wurde
-      let result;
-      try {
-        result = JSON.parse(jsonStr);
-      } catch (parseError) {
-        // Versuche abgeschnittenes JSON zu reparieren
-        console.warn('JSON parse error, trying to repair...', parseError);
-        
-        // Finde die letzte vollständige Immobilie
-        const lastCompleteIndex = jsonStr.lastIndexOf('},');
-        if (lastCompleteIndex > 0) {
-          // Schneide ab und schließe das Array/Objekt
-          let repairedJson = jsonStr.substring(0, lastCompleteIndex + 1);
-          
-          // Zähle offene Klammern
-          const openBrackets = (repairedJson.match(/\[/g) || []).length;
-          const closeBrackets = (repairedJson.match(/\]/g) || []).length;
-          const openBraces = (repairedJson.match(/\{/g) || []).length;
-          const closeBraces = (repairedJson.match(/\}/g) || []).length;
-          
-          // Schließe offene Klammern
-          for (let i = 0; i < openBrackets - closeBrackets; i++) repairedJson += ']';
-          for (let i = 0; i < openBraces - closeBraces; i++) repairedJson += '}';
-          
-          try {
-            result = JSON.parse(repairedJson);
-            console.log('JSON repaired successfully');
-          } catch (repairError) {
-            throw new Error(`JSON konnte nicht repariert werden. Bitte versuche es mit kleineren Dokumenten.`);
-          }
-        } else {
-          throw parseError;
+      // Info über Komprimierung (optional)
+      if (prepared.compressedSize && prepared.originalSize > prepared.compressedSize) {
+        console.log(`Datei komprimiert: ${(prepared.originalSize / 1024).toFixed(0)} KB → ${(prepared.compressedSize / 1024).toFixed(0)} KB`);
+      }
+    } catch (err) {
+      console.error('Fehler beim Verarbeiten der Datei:', err);
+      setError('Fehler beim Verarbeiten der Datei: ' + err.message);
+    }
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    addFiles(Array.from(e.dataTransfer.files));
+  };
+
+  const currentFile = files[currentFileIndex];
+
+  const getMediaType = () => {
+    if (!currentFile) return null;
+    if (currentFile.type === 'application/pdf') return 'application/pdf';
+    if (currentFile.type === 'image/png') return 'image/png';
+    if (currentFile.type === 'image/jpeg') return 'image/jpeg';
+    if (currentFile.type === 'image/webp') return 'image/webp';
+    return currentFile.type;
+  };
+
+  const analyzeOne = async (filename, base64, mediaType) => {
+    const fullPrompt = IMMO_DOC_PROMPT + "\n\nAnalysiere dieses Dokument. Erkenne den Dokumenttyp, extrahiere alle Immobilien- und Darlehensdaten. Achte auf laufende Nummern zur Zuordnung. Antworte nur mit JSON.";
+    const response = await fetch("/api/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image: base64, mimeType: mediaType, systemPrompt: fullPrompt })
+    });
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({}));
+      throw new Error(errData.error || `API Fehler: ${response.status}`);
+    }
+    const data = await response.json();
+    const textContent = data.text || '';
+    if (!textContent) throw new Error('Keine Antwort vom Server erhalten.');
+    let jsonStr = textContent.trim();
+    if (jsonStr.includes('```')) jsonStr = jsonStr.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+    let result;
+    try { result = JSON.parse(jsonStr); }
+    catch (parseError) {
+      const lastCompleteIndex = jsonStr.lastIndexOf('},');
+      if (lastCompleteIndex > 0) {
+        let repairedJson = jsonStr.substring(0, lastCompleteIndex + 1);
+        const openBrackets = (repairedJson.match(/\[/g) || []).length;
+        const closeBrackets = (repairedJson.match(/\]/g) || []).length;
+        const openBraces = (repairedJson.match(/\{/g) || []).length;
+        const closeBraces = (repairedJson.match(/\}/g) || []).length;
+        for (let i = 0; i < openBrackets - closeBrackets; i++) repairedJson += ']';
+        for (let i = 0; i < openBraces - closeBraces; i++) repairedJson += '}';
+        result = JSON.parse(repairedJson);
+      } else { throw parseError; }
+    }
+    const immoArray = Array.isArray(result.immobilien) ? result.immobilien : [];
+    const darlehenOhneZuordnung = Array.isArray(result.darlehen_ohne_zuordnung) ? result.darlehen_ohne_zuordnung : [];
+    if (immoArray.length === 0 && darlehenOhneZuordnung.length === 0) return null;
+    return {
+      filename,
+      dokumentTyp: result.dokumentTyp || 'sonstiges',
+      dokumentBeschreibung: result.dokumentBeschreibung || 'Dokument',
+      immobilien: immoArray.map(immo => ({
+        ...immo,
+        zuPruefen: immo.gefundeneFelder || Object.keys(immo).filter(k => !['gefundeneFelder', 'zuPruefen', 'darlehen'].includes(k))
+      })),
+      darlehenOhneZuordnung: darlehenOhneZuordnung
+    };
+  };
+
+  const buildCombined = (updatedAllParsed) => {
+    let allImmobilien = updatedAllParsed.flatMap(pd =>
+      pd.immobilien.map(immo => ({ ...immo, quellenDokument: pd.filename, dokumentTyp: pd.dokumentTyp }))
+    );
+    const allDarlehenOhneZuordnung = updatedAllParsed.flatMap(pd =>
+      (pd.darlehenOhneZuordnung || []).map(d => ({ ...d, quellenDokument: pd.filename }))
+    );
+    if (allDarlehenOhneZuordnung.length > 0 && allImmobilien.length > 0) {
+      allImmobilien = allImmobilien.map(immo => {
+        const passendeDarlehen = allDarlehenOhneZuordnung.filter(d => {
+          if (d.immobilienNr && immo.lfdNr && d.immobilienNr === immo.lfdNr) return true;
+          if (d.lfdNr && immo.lfdNr && d.lfdNr === immo.lfdNr) return true;
+          if (d.immobilienName && immo.name && d.immobilienName.toLowerCase().includes(immo.name.toLowerCase())) return true;
+          return false;
+        });
+        if (passendeDarlehen.length > 0) {
+          const existingDarlehen = immo.darlehen || [];
+          const neueDarlehen = passendeDarlehen.map(d => ({
+            name: d.name || `Darlehen ${d.lfdNr || ''}`,
+            institut: d.institut || d.bank || '',
+            kontonummer: d.kontonummer || '',
+            typ: d.typ || 'annuitaeten',
+            betrag: d.betrag || d.darlehenssumme || 0,
+            zinssatz: d.zinssatz || d.sollzins || 0,
+            effektivzins: d.effektivzins || 0,
+            tilgung: d.tilgung || d.anfangstilgung || 2,
+            monatsrate: d.monatsrate || d.rate || 0,
+            sondertilgung: d.sondertilgung || 5,
+            abschluss: d.abschluss || d.abschlussdatum || '',
+            ersteRate: d.ersteRate || '',
+            laufzeit: d.laufzeit || 0,
+            zinsbindungJahre: d.zinsbindungJahre || d.zinsbindung || 10,
+            zinsbindungEnde: d.zinsbindungEnde || '',
+            restschuld: d.restschuld || 0
+          }));
+          return { ...immo, darlehen: [...existingDarlehen, ...neueDarlehen], zuPruefen: [...(immo.zuPruefen || []), 'darlehen'] };
         }
-      }
-      
-      const immoArray = Array.isArray(result.immobilien) ? result.immobilien : [];
-      const darlehenOhneZuordnung = Array.isArray(result.darlehen_ohne_zuordnung) ? result.darlehen_ohne_zuordnung : [];
-      
-      // Wenn nur Darlehen gefunden wurden (keine Immobilien), trotzdem speichern
-      if (immoArray.length === 0 && darlehenOhneZuordnung.length === 0) {
+        return immo;
+      });
+    }
+    if (allImmobilien.length === 0 && allDarlehenOhneZuordnung.length > 0) {
+      const darlehenByImmo = {};
+      allDarlehenOhneZuordnung.forEach(d => {
+        const key = d.immobilienNr || d.lfdNr || 'unknown';
+        if (!darlehenByImmo[key]) darlehenByImmo[key] = [];
+        darlehenByImmo[key].push(d);
+      });
+      allImmobilien = Object.entries(darlehenByImmo).map(([key, darlehen]) => ({
+        name: `Immobilie ${key}`,
+        lfdNr: parseInt(key) || 0,
+        quellenDokument: darlehen[0]?.quellenDokument,
+        dokumentTyp: 'darlehen_liste',
+        darlehen: darlehen.map(d => ({
+          name: d.name || `Darlehen`,
+          institut: d.institut || d.bank || '',
+          betrag: d.betrag || d.darlehenssumme || 0,
+          zinssatz: d.zinssatz || 0,
+          tilgung: d.tilgung || 2,
+          monatsrate: d.monatsrate || 0,
+          zinsbindungJahre: d.zinsbindungJahre || d.zinsbindung || 10
+        })),
+        zuPruefen: ['name', 'adresse', 'darlehen']
+      }));
+    }
+    return {
+      filename: updatedAllParsed.map(pp => pp.filename).join(', '),
+      dokumentTyp: updatedAllParsed.map(pp => pp.dokumentTyp).join(' + '),
+      dokumentBeschreibung: updatedAllParsed.map(pp => pp.dokumentBeschreibung).join(' | '),
+      immobilien: allImmobilien,
+      quellenDokumente: updatedAllParsed
+    };
+  };
+
+  const parseDocument = async () => {
+    if (!currentFile || !base64Data) return;
+    setParsing(true);
+    setError(null);
+    setProcessingStatus('processing');
+    try {
+      const newParsedData = await analyzeOne(currentFile.name, base64Data, getMediaType());
+      if (!newParsedData) {
         setError('Keine Immobilien- oder Darlehensdaten im Dokument gefunden.');
-        setParsing(false);
         setProcessingStatus(null);
+        setParsing(false);
         return;
       }
-
-      const newParsedData = {
-        filename: currentFile.name,
-        dokumentTyp: result.dokumentTyp || 'sonstiges',
-        dokumentBeschreibung: result.dokumentBeschreibung || 'Dokument',
-        immobilien: immoArray.map(immo => ({
-          ...immo,
-          zuPruefen: immo.gefundeneFelder || Object.keys(immo).filter(k => !['gefundeneFelder', 'zuPruefen', 'darlehen'].includes(k))
-        })),
-        darlehenOhneZuordnung: darlehenOhneZuordnung
-      };
-
-      setDocumentType(result.dokumentTyp || 'sonstiges');
-      
-      // Speichere geparste Daten und kombiniere mit vorherigen
+      setDocumentType(newParsedData.dokumentTyp);
       const updatedAllParsed = [...allParsedData, newParsedData];
       setAllParsedData(updatedAllParsed);
-      
-      // Alle Immobilien und Darlehen sammeln
-      let allImmobilien = updatedAllParsed.flatMap(pd => 
-        pd.immobilien.map(immo => ({
-          ...immo,
-          quellenDokument: pd.filename,
-          dokumentTyp: pd.dokumentTyp
-        }))
-      );
-      
-      // Alle Darlehen ohne Zuordnung sammeln
-      const allDarlehenOhneZuordnung = updatedAllParsed.flatMap(pd => 
-        (pd.darlehenOhneZuordnung || []).map(d => ({
-          ...d,
-          quellenDokument: pd.filename
-        }))
-      );
-      
-      // ZUORDNUNG: Darlehen zu Immobilien basierend auf lfdNr/immobilienNr
-      if (allDarlehenOhneZuordnung.length > 0 && allImmobilien.length > 0) {
-        allImmobilien = allImmobilien.map(immo => {
-          // Finde passende Darlehen für diese Immobilie
-          const passendeDarlehen = allDarlehenOhneZuordnung.filter(d => {
-            // Matching über lfdNr/immobilienNr
-            if (d.immobilienNr && immo.lfdNr && d.immobilienNr === immo.lfdNr) return true;
-            if (d.lfdNr && immo.lfdNr && d.lfdNr === immo.lfdNr) return true;
-            // Matching über Name/Adresse falls vorhanden
-            if (d.immobilienName && immo.name && d.immobilienName.toLowerCase().includes(immo.name.toLowerCase())) return true;
-            return false;
-          });
-          
-          if (passendeDarlehen.length > 0) {
-            // Darlehen zum darlehen-Array der Immobilie hinzufügen
-            const existingDarlehen = immo.darlehen || [];
-            const neueDarlehen = passendeDarlehen.map(d => ({
-              name: d.name || `Darlehen ${d.lfdNr || ''}`,
-              institut: d.institut || d.bank || '',
-              kontonummer: d.kontonummer || '',
-              typ: d.typ || 'annuitaeten',
-              betrag: d.betrag || d.darlehenssumme || 0,
-              zinssatz: d.zinssatz || d.sollzins || 0,
-              effektivzins: d.effektivzins || 0,
-              tilgung: d.tilgung || d.anfangstilgung || 2,
-              monatsrate: d.monatsrate || d.rate || 0,
-              sondertilgung: d.sondertilgung || 5,
-              abschluss: d.abschluss || d.abschlussdatum || '',
-              ersteRate: d.ersteRate || '',
-              laufzeit: d.laufzeit || 0,
-              zinsbindungJahre: d.zinsbindungJahre || d.zinsbindung || 10,
-              zinsbindungEnde: d.zinsbindungEnde || '',
-              restschuld: d.restschuld || 0
-            }));
-            
-            return {
-              ...immo,
-              darlehen: [...existingDarlehen, ...neueDarlehen],
-              zuPruefen: [...(immo.zuPruefen || []), 'darlehen']
-            };
-          }
-          return immo;
-        });
-      }
-      
-      // Falls es nur Darlehen gibt (keine Immobilien), erstelle Dummy-Immobilien
-      if (allImmobilien.length === 0 && allDarlehenOhneZuordnung.length > 0) {
-        // Gruppiere Darlehen nach immobilienNr
-        const darlehenByImmo = {};
-        allDarlehenOhneZuordnung.forEach(d => {
-          const key = d.immobilienNr || d.lfdNr || 'unknown';
-          if (!darlehenByImmo[key]) darlehenByImmo[key] = [];
-          darlehenByImmo[key].push(d);
-        });
-        
-        allImmobilien = Object.entries(darlehenByImmo).map(([key, darlehen]) => ({
-          name: `Immobilie ${key}`,
-          lfdNr: parseInt(key) || 0,
-          quellenDokument: darlehen[0]?.quellenDokument,
-          dokumentTyp: 'darlehen_liste',
-          darlehen: darlehen.map(d => ({
-            name: d.name || `Darlehen`,
-            institut: d.institut || d.bank || '',
-            betrag: d.betrag || d.darlehenssumme || 0,
-            zinssatz: d.zinssatz || 0,
-            tilgung: d.tilgung || 2,
-            monatsrate: d.monatsrate || 0,
-            zinsbindungJahre: d.zinsbindungJahre || d.zinsbindung || 10
-          })),
-          zuPruefen: ['name', 'adresse', 'darlehen']
-        }));
-      }
-
-      setParsedData({
-        filename: files.map(f => f.name).join(', '),
-        dokumentTyp: updatedAllParsed.map(p => p.dokumentTyp).join(' + '),
-        dokumentBeschreibung: updatedAllParsed.map(p => p.dokumentBeschreibung).join(' | '),
-        immobilien: allImmobilien,
-        quellenDokumente: updatedAllParsed
-      });
-      
+      setParsedData(buildCombined(updatedAllParsed));
       setProcessingStatus('done');
-      
     } catch (err) {
       console.error('Parse error:', err);
       setError(`Fehler beim Analysieren: ${err.message}`);
       setProcessingStatus(null);
     }
-    
+    setParsing(false);
+  };
+
+  const parseAllDocuments = async () => {
+    if (files.length === 0) return;
+    if (files.length === 1) return parseDocument();
+    setParsing(true);
+    setError(null);
+    setProcessingStatus('processing');
+    const accumulated = [];
+    let lastErr = null;
+    try {
+      for (let i = 0; i < files.length; i++) {
+        setCurrentFileIndex(i);
+        try {
+          const prepared = await prepareFileForUpload(files[i]);
+          const mt = prepared.mimeType || files[i].type;
+          const res = await analyzeOne(files[i].name, prepared.base64, mt);
+          if (res) accumulated.push(res);
+        } catch (e) {
+          lastErr = e;
+          console.error('Fehler bei Datei', files[i] && files[i].name, e);
+        }
+      }
+      if (accumulated.length === 0) {
+        setError(lastErr ? `Fehler beim Analysieren: ${lastErr.message}` : 'Keine Daten in den Dokumenten gefunden.');
+        setProcessingStatus(null);
+        setParsing(false);
+        return;
+      }
+      setDocumentType(accumulated[accumulated.length - 1].dokumentTyp);
+      setAllParsedData(accumulated);
+      setParsedData(buildCombined(accumulated));
+      setProcessingStatus('done');
+      if (lastErr) setError(`Hinweis: Ein Dokument konnte nicht gelesen werden (${lastErr.message}). Die \u00fcbrigen wurden verarbeitet.`);
+    } catch (err) {
+      setError(`Fehler beim Analysieren: ${err.message}`);
+      setProcessingStatus(null);
+    }
     setParsing(false);
   };
 
@@ -2001,6 +2035,130 @@ Wichtig:
       processFile(files[nextIndex]);
       setProcessingStatus(null);
     }
+  };
+
+  // Mehrere Dokumente zu EINEM Gebäude mit Einheiten zusammenführen
+  const mapDarlehenImport = (darlehen) => (Array.isArray(darlehen) ? darlehen.map(d => ({
+    name: d.name || '', institut: d.institut || '', kontonummer: d.kontonummer || '',
+    typ: d.typ || 'annuitaeten', betrag: d.betrag || 0, zinssatz: d.zinssatz || 0,
+    effektivzins: d.effektivzins || 0, tilgung: d.tilgung || 2, monatsrate: d.monatsrate || 0,
+    sondertilgung: d.sondertilgung || 5, abschluss: d.abschluss || '', ersteRate: d.ersteRate || '',
+    laufzeit: d.laufzeit || 0, zinsbindungJahre: d.zinsbindungJahre || 10, zinsbindungEnde: d.zinsbindungEnde || '',
+    restschuld: d.restschuld || 0
+  })) : []);
+
+  const cleanImmo = (immo) => {
+    const { gefundeneFelder, zuPruefen, quellenDokument, dokumentTyp, lfdNr, immobilienNr, darlehen, werbungskosten, ...rest } = immo;
+    return rest;
+  };
+
+  const existingUnitNrs = new Set((existingEinheiten || []).map(e => String(e.stammdaten?.wohnungsNr || '').trim().toLowerCase()).filter(Boolean));
+  const isDuplicateUnit = (immo) => {
+    const nr = String(immo.wohnungsNr || '').trim().toLowerCase();
+    return !!nr && existingUnitNrs.has(nr);
+  };
+
+  const importAsGebaeude = () => {
+    const containerId = Date.now() + '_geb_' + Math.random().toString(36).substr(2, 9);
+    const docs = (parsedData.quellenDokumente && parsedData.quellenDokumente.length)
+      ? parsedData.quellenDokumente
+      : [{ immobilien: parsedData.immobilien, dokumentTyp: parsedData.dokumentTyp }];
+
+    let buildingFields = {};
+    let buildingDarlehen = [];
+    let buildingZuPruefen = [];
+    const units = [];
+
+    docs.forEach(doc => {
+      const list = doc.immobilien || [];
+      const isUnitDoc = list.length > 1 || ['mietvertrag', 'auflistung'].includes(doc.dokumentTyp);
+      if (isUnitDoc) {
+        list.forEach(u => units.push(u));
+      } else {
+        list.forEach(b => {
+          Object.entries(cleanImmo(b)).forEach(([k, v]) => {
+            const empty = v === '' || v === null || v === undefined || (typeof v === 'number' && v === 0);
+            if (!empty && buildingFields[k] === undefined) buildingFields[k] = v;
+          });
+          buildingDarlehen = buildingDarlehen.concat(mapDarlehenImport(b.darlehen));
+          buildingZuPruefen = buildingZuPruefen.concat(b.zuPruefen || b.gefundeneFelder || []);
+        });
+      }
+    });
+
+    if (!buildingFields.name) buildingFields.name = units[0]?.adresse || units[0]?.name || 'Importiertes Gebäude';
+    const baseStamm = createEmpty().stammdaten;
+    const ea = buildingFields.eigentumsart || 'gesamt';
+
+    const container = {
+      ...createEmpty(),
+      id: containerId,
+      isContainer: true,
+      parentId: null,
+      importiert: true,
+      zuPruefen: Array.from(new Set(buildingZuPruefen)),
+      darlehen: buildingDarlehen,
+      stammdaten: { ...baseStamm, ...buildingFields, eigentumsart: ea },
+    };
+
+    const unitImmos = units.map((u, idx) => ({
+      ...createEmpty(),
+      id: containerId + '_u' + idx,
+      isContainer: false,
+      parentId: containerId,
+      importiert: true,
+      zuPruefen: u.zuPruefen || u.gefundeneFelder || [],
+      darlehen: mapDarlehenImport(u.darlehen),
+      stammdaten: { ...baseStamm, ...cleanImmo(u), eigentumsart: ea },
+    }));
+
+    onImport([container, ...unitImmos]);
+  };
+
+  // Gefundene Wohnungen als Einheiten zu einem bereits geöffneten Gebäude hinzufügen
+  const importAsEinheiten = () => {
+    const parentId = existingImmo.id;
+    const ea = existingImmo.stammdaten?.eigentumsart || 'weg';
+    const baseStamm = createEmpty().stammdaten;
+    const incoming = parsedData.immobilien;
+    const toAdd = incoming.filter(u => !isDuplicateUnit(u));
+    const skipped = incoming.length - toAdd.length;
+    const unitImmos = toAdd.map((u, idx) => ({
+      ...createEmpty(),
+      id: Date.now() + '_eu' + idx + '_' + Math.random().toString(36).substr(2, 5),
+      isContainer: false,
+      parentId,
+      importiert: true,
+      zuPruefen: u.zuPruefen || u.gefundeneFelder || [],
+      darlehen: mapDarlehenImport(u.darlehen),
+      stammdaten: { ...baseStamm, ...cleanImmo(u), eigentumsart: ea },
+    }));
+    if (skipped > 0) {
+      alert(skipped + ' Wohnung(en) waren bereits als Einheit vorhanden (gleiche Wohnungs-Nr.) und wurden übersprungen. ' + unitImmos.length + ' neu hinzugefügt.');
+    }
+    if (unitImmos.length === 0) return;
+    onImport(unitImmos);
+  };
+
+  const addOneAsEinheit = (immo) => {
+    if (isDuplicateUnit(immo)) {
+      alert('Eine Einheit mit dieser Wohnungs-Nr. ist bereits im Gebäude vorhanden. Sie wurde nicht doppelt angelegt.');
+      return;
+    }
+    const parentId = existingImmo.id;
+    const ea = existingImmo.stammdaten?.eigentumsart || 'weg';
+    const baseStamm = createEmpty().stammdaten;
+    const unit = {
+      ...createEmpty(),
+      id: Date.now() + '_eu_' + Math.random().toString(36).substr(2, 6),
+      isContainer: false,
+      parentId,
+      importiert: true,
+      zuPruefen: immo.zuPruefen || immo.gefundeneFelder || [],
+      darlehen: mapDarlehenImport(immo.darlehen),
+      stammdaten: { ...baseStamm, ...cleanImmo(immo), eigentumsart: ea },
+    };
+    onImport([unit]);
   };
 
   const handleImport = (immoData) => {
@@ -2376,6 +2534,12 @@ Wichtig:
                       <span className="file-size">{(f.size / 1024).toFixed(0)} KB</span>
                     </div>
                   ))}
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:'6px',padding:'0 2px'}}>
+                    <span style={{fontSize:'11px',color:'var(--text-muted)'}}>Tipp: weitere Dokumente einfach zusätzlich reinziehen oder per ⌘+Klick mehrere auswählen.</span>
+                    {allParsedData.length === 0 && !parsing && (
+                      <button onClick={clearFiles} style={{background:'transparent',border:'1px solid var(--border)',color:'var(--text-muted)',borderRadius:'5px',fontSize:'11px',padding:'3px 8px',cursor:'pointer'}}>Liste leeren</button>
+                    )}
+                  </div>
                 </div>
               )}
               
@@ -2464,6 +2628,16 @@ Wichtig:
                     <IconCheck color="#fff" /> Alle {parsedData.immobilien.length} importieren
                   </button>
                 )}
+                {!existingImmo && ((parsedData.quellenDokumente?.length || 0) > 1 || parsedData.immobilien.length > 1) && (
+                  <button className="btn-import-all" style={{ background: '#6366f1', marginLeft: '8px' }} onClick={importAsGebaeude} title="Alle Dokumente zu einem Gebäude verschmelzen; Wohnungen aus Mieterliste werden als Einheiten angelegt">
+                    🏢 Als 1 Gebäude + Einheiten importieren
+                  </button>
+                )}
+                {existingImmo && existingImmo.isContainer && parsedData.immobilien.length >= 1 && (
+                  <button className="btn-import-all" style={{ background: '#6366f1' }} onClick={importAsEinheiten} title="Die gefundenen Wohnungen als neue Einheiten zu diesem Gebäude hinzufügen">
+                    🏠 Als {parsedData.immobilien.length} Einheit{parsedData.immobilien.length !== 1 ? 'en' : ''} zu diesem Gebäude hinzufügen
+                  </button>
+                )}
               </div>
               
               <div className="parsed-immos-scroll">
@@ -2475,8 +2649,8 @@ Wichtig:
                     total={parsedData.immobilien.length}
                     formatFieldName={formatFieldName}
                     formatValue={formatValue}
-                    handleImport={existingImmo ? prepareMerge : handleImport}
-                    buttonLabel={existingImmo ? 'Zusammenführen' : 'Importieren'}
+                    handleImport={existingImmo ? (existingImmo.isContainer ? addOneAsEinheit : prepareMerge) : handleImport}
+                    buttonLabel={existingImmo ? (existingImmo.isContainer ? '+ Als Einheit' : 'Zusammenführen') : 'Importieren'}
                   />
                 ))}
               </div>
@@ -2494,7 +2668,7 @@ Wichtig:
         <div className="modal-f">
           {!parsedData ? (
             <>
-              <button className="btn-pri" onClick={parseDocument} disabled={files.length === 0 || parsing}>
+              <button className="btn-pri" onClick={parseAllDocuments} disabled={files.length === 0 || parsing}>
                 {parsing ? (
                   <><span className="spinner"></span> Analysiere Dokument {currentFileIndex + 1}/{files.length}...</>
                 ) : (
@@ -3523,6 +3697,7 @@ const slBuildProfile = (immo) => {
   ])];
   return { id: immo.id, name: s.name || `Immobilie ${immo.id}`, adresse: s.adresse || '', typ: s.typ || '',
     knownLast4s, knownBanks, allTokens, existingDarlehen: darlehen,
+    kaufpreis: (s.kaufpreisImmobilie || 0) + (s.kaufpreisStellplatz || 0) + (s.mehrkosten || 0),
     normalizedName: slNormalize(s.name || ''), normalizedAdresse: slNormalize(s.adresse || '') };
 };
 
@@ -3569,6 +3744,20 @@ const slComputeMatch = (loan, profile) => {
         confidence += 0.1; reasons.push(`Restschuld ähnlich (${eb.toLocaleString('de-DE')}€)`); break;
       }
     }
+  }
+  // Starke Orts-/Namens-Übereinstimmung (z.B. Stadt-/Straßenname im Darlehenslabel)
+  const SL_STOP = new Set(['bank','gmbh','objektfinanzierung','finanzierung','objekt','darlehen','kredit','immobilie','immobilien','eigentumswohnung','wohnung','gewerbe','clever','fit','sparkasse','volksbank','raiffeisen','strasse','weg','etw','neubau','bestand','und','der','die','das','fuer','vom']);
+  const loanText = slNormalize([loan.rawLabel, loan.normalizedLabel, loan.propertyHint].filter(Boolean).join(' '));
+  const loanTokens = new Set(loanText.split(' ').filter(t => t.length >= 4 && !SL_STOP.has(t)));
+  const strongOverlap = profile.allTokens.filter(t => t.length >= 4 && !SL_STOP.has(t) && loanTokens.has(t));
+  if (strongOverlap.length > 0) {
+    confidence += Math.min(0.5, 0.35 * strongOverlap.length);
+    reasons.push(`Ort/Name passt: ${strongOverlap.join(', ')}`);
+  }
+  // Darlehensbetrag passt zum Kaufpreis des Objekts
+  const loanAmt = loan.originalAmount || loan.balance || 0;
+  if (loanAmt > 0 && profile.kaufpreis > 0 && Math.min(loanAmt, profile.kaufpreis) / Math.max(loanAmt, profile.kaufpreis) > 0.85) {
+    confidence += 0.2; reasons.push(`Darlehensbetrag passt zum Kaufpreis (${profile.kaufpreis.toLocaleString('de-DE')}€)`);
   }
   return { confidence: Math.min(confidence, 1.0), reasons };
 };
@@ -3814,9 +4003,10 @@ const SmartLoanImportModal = ({ immobilien = [], onClose, onImport }) => {
               </div>
             </div>
 
-            {/* Notes */}
+            {/* Notes (informative Zusatzinfos aus dem Dokument, KEINE Fehler) */}
             {result.notes?.length > 0 && <div style={{marginBottom:'12px'}}>
-              {result.notes.map((n,i) => <div key={i} style={{padding:'8px 12px',background:'rgba(245,158,11,0.1)',border:'1px solid rgba(245,158,11,0.2)',borderRadius:'6px',color:'#fbbf24',fontSize:'12px',marginBottom:'4px'}}>⚠️ {n}</div>)}
+              <div style={{fontSize:'12px',fontWeight:'600',color:'var(--text-muted)',marginBottom:'6px'}}>ℹ️ Zusätzliche Infos aus dem Dokument <span style={{fontWeight:'400'}}>(zur Kenntnis – keine Fehler; werden nicht automatisch in Felder übernommen)</span></div>
+              {result.notes.map((n,i) => <div key={i} style={{padding:'8px 12px',background:'rgba(99,102,241,0.08)',border:'1px solid rgba(99,102,241,0.2)',borderRadius:'6px',color:'var(--text)',fontSize:'12px',marginBottom:'4px'}}>{n}</div>)}
             </div>}
 
             {/* Loans */}
@@ -3958,7 +4148,7 @@ const exportSingleImmobilie = (p, c) => {
   const mh = p.miethistorie || [];
   const sa = s.sonderausstattung || [];
   const gwg = (s.grundstueckGroesse || 0) * (s.bodenrichtwert || 0);
-  const ga = s.teileigentumsanteil > 0 ? (s.teileigentumsanteil / 10000) * gwg : 0;
+  const ga = s.erbbaurecht ? 0 : (s.eigentumsart === 'gesamt' ? gwg : (s.teileigentumsanteil > 0 ? (s.teileigentumsanteil / 10000) * gwg : 0));
   const restschuld = darlehen.reduce((sum, d) => sum + (d.restschuld || d.betrag || 0), 0);
   const monatsrate = darlehen.reduce((sum, d) => sum + (d.monatsrate || 0), 0);
 
@@ -4156,7 +4346,7 @@ const exportPortfolio = (filtered, totals, avgRendite) => {
 };
 
 // Stammdaten
-const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, validationErrors = {}, beteiligte = [], immobilien = [], onSmartImport }) => {
+const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, validationErrors = {}, beteiligte = [], immobilien = [], onSmartImport, onAddEinheit, onSelectEinheit, onAssignEinheit, onDetachEinheit, onDeleteUnit }) => {
   const [sec, setSec] = useState(null);
   const [secExpanded, setSecExpanded] = useState(false);
   const [darlehenImportModal, setDarlehenImportModal] = useState(false);
@@ -4165,8 +4355,13 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
   const [mhistOpen, setMhistOpen] = useState(false);
   const [mhistImportModal, setMhistImportModal] = useState(false);
   const [archiveConfirm, setArchiveConfirm] = useState(false);
+  const [showAssign, setShowAssign] = useState(false);
+  const [detachConfirmId, setDetachConfirmId] = useState(null);
   const [resetConfirm, setResetConfirm] = useState(null); // 'objekt' | 'kaufpreis' | 'miete' | etc.
   const s = p.stammdaten;
+  const einheiten = (immobilien || []).filter(x => x.parentId === p.id);
+  const parentGebaeude = p.parentId ? (immobilien || []).find(x => x.id === p.parentId) : null;
+  const zuordenbar = (immobilien || []).filter(x => !x.isContainer && !x.parentId && x.id !== p.id && x.saved);
   const zuPruefen = p.zuPruefen || [];
   const istImportiert = p.importiert && zuPruefen.length > 0;
   
@@ -4286,12 +4481,52 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
         <div className="kpi"><span>= Anschaffung</span><b className="acc">{fmt(c.ak)}</b></div>
         <div className="kpi"><span>Jahres-Kaltmiete</span><b className="pos">{fmt(c.jm)}</b></div>
         <div className="kpi"><span>Rendite</span><b className="acc">{fmtP(c.rendite)}</b></div>
+        <div className="kpi"><span>Faktor</span><b>{c.kaufpreisfaktor ? c.kaufpreisfaktor.toFixed(1) : '–'}</b></div>
         <div className="kpi"><span>AfA p.a.</span><b>{fmt(c.afaGes)}</b></div>
       </div>
       <div className="accs">
-        <Acc icon={<IconObjekt color="#6366f1" />} title="Objekt" sum={s.name || 'Name eingeben...'} open={sec === 'obj'} toggle={() => setSec(sec === 'obj' ? null : 'obj')} color="#6366f1" onImport={onOpenImport}>
+        <Acc icon={<IconObjekt color="#6366f1" />} title="Objekt" sum={(p.isContainer ? '🏢 Gebäude · ' : '') + (s.name || 'Name eingeben...')} open={sec === 'obj'} toggle={() => setSec(sec === 'obj' ? null : 'obj')} color="#6366f1" onImport={onOpenImport}>
+          {/* === Hierarchie: Einheit-Navigation oder Gebäude-Toggle === */}
+          {parentGebaeude ? (
+            <div onClick={() => onSelectEinheit && onSelectEinheit(parentGebaeude)} style={{display:'flex',alignItems:'center',gap:'8px',padding:'10px 12px',marginBottom:'12px',background:'rgba(99,102,241,0.08)',border:'1px solid rgba(99,102,241,0.25)',borderRadius:'8px',cursor:'pointer'}}>
+              <span style={{fontSize:'16px'}}>←</span>
+              <span style={{fontSize:'13px'}}>Einheit in <b>🏢 {parentGebaeude.stammdaten?.name || 'Gebäude'}</b> · zurück zum Gebäude</span>
+            </div>
+          ) : (
+            <div className="container-toggle" style={{display:'flex',gap:'8px',padding:'10px',marginBottom:'12px',background:'rgba(99,102,241,0.05)',border:'1px solid rgba(99,102,241,0.2)',borderRadius:'8px'}}>
+              <label style={{flex:1,display:'flex',alignItems:'center',gap:'8px',padding:'8px 10px',background:!p.isContainer?'rgba(99,102,241,0.15)':'transparent',border:`1px solid ${!p.isContainer?'#6366f1':'var(--border)'}`,borderRadius:'6px',cursor:'pointer'}}>
+                <input type="radio" name="immo-typ" checked={!p.isContainer} onChange={() => upd({...p, isContainer: false})} style={{accentColor:'#6366f1'}}/>
+                <span style={{fontSize:'13px',fontWeight:!p.isContainer?'600':'400'}}>Eigenständige Einheit</span>
+              </label>
+              <label style={{flex:1,display:'flex',alignItems:'center',gap:'8px',padding:'8px 10px',background:p.isContainer?'rgba(99,102,241,0.15)':'transparent',border:`1px solid ${p.isContainer?'#6366f1':'var(--border)'}`,borderRadius:'6px',cursor:'pointer'}}>
+                <input type="radio" name="immo-typ" checked={!!p.isContainer} onChange={() => upd({...p, isContainer: true})} style={{accentColor:'#6366f1'}}/>
+                <span style={{fontSize:'13px',fontWeight:p.isContainer?'600':'400'}}>🏢 Gebäude mit Einheiten</span>
+              </label>
+            </div>
+          )}
+          {p.isContainer && (
+            <div style={{marginBottom:'14px'}}>
+              <div style={{marginBottom:'10px'}}>
+                <div style={{fontSize:'12px',fontWeight:'600',marginBottom:'6px'}}>Art des Gebäudes</div>
+                <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
+                  <label style={{display:'flex',alignItems:'flex-start',gap:'8px',padding:'8px 10px',background:s.eigentumsart==='gesamt'?'rgba(99,102,241,0.15)':'transparent',border:`1px solid ${s.eigentumsart==='gesamt'?'#6366f1':'var(--border)'}`,borderRadius:'6px',cursor:'pointer'}}>
+                    <input type="radio" name="geb-eigentumsart" checked={s.eigentumsart==='gesamt'} onChange={() => set('eigentumsart','gesamt')} style={{accentColor:'#6366f1',marginTop:'2px'}}/>
+                    <span style={{fontSize:'12px'}}><b>Ein Objekt mit mehreren Wohnungen</b><br/><span style={{color:'var(--text-muted)'}}>Kein Teileigentum · ein Grundbuchblatt · keine Teilungserklärung (z.B. klassisches MFH)</span></span>
+                  </label>
+                  <label style={{display:'flex',alignItems:'flex-start',gap:'8px',padding:'8px 10px',background:s.eigentumsart==='weg'?'rgba(99,102,241,0.15)':'transparent',border:`1px solid ${s.eigentumsart==='weg'?'#6366f1':'var(--border)'}`,borderRadius:'6px',cursor:'pointer'}}>
+                    <input type="radio" name="geb-eigentumsart" checked={s.eigentumsart==='weg'} onChange={() => set('eigentumsart','weg')} style={{accentColor:'#6366f1',marginTop:'2px'}}/>
+                    <span style={{fontSize:'12px'}}><b>Mehrere Eigentumswohnungen</b><br/><span style={{color:'var(--text-muted)'}}>WEG · Teilungserklärung · je Wohnung eigenes Grundbuch & Teileigentumsanteil</span></span>
+                  </label>
+                </div>
+                <p style={{fontSize:'11px',color:'var(--text-muted)',margin:'6px 2px 0'}}>Neu angelegte Einheiten übernehmen diese Eigentumsart automatisch (lässt sich je Wohnung ändern).</p>
+              </div>
+              <div style={{padding:'8px 12px',marginBottom:'10px',background:'rgba(99,102,241,0.08)',borderRadius:'6px',fontSize:'11px',color:'var(--text-muted)'}}>
+                ℹ️ Die Wohnflächen-/Wertfelder hier beziehen sich auf das <b>gesamte Gebäude</b>. Die einzelnen Wohnungen pflegst du im eigenen Abschnitt <b>Einheiten</b> direkt unter Objekt.
+              </div>
+            </div>
+          )}
           <div className="field-with-btn">
-            <Input label="Name *" value={s.name} onChange={v => set('name', v)} type="text" ph="z.B. ETW Marburg" error={validationErrors.name} />
+            <Input label="Name *" value={s.name} onChange={v => set('name', v)} type="text" ph={p.isContainer ? "z.B. MFH Marburger Str. 12" : "z.B. ETW Marburg"} error={validationErrors.name} />
             <button 
               className="auto-gen-btn" 
               onClick={() => {
@@ -4321,6 +4556,19 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
             <Input label="Etage" value={s.etage} onChange={v => set('etage', v)} type="text" ph="z.B. 3. OG" />
           </div>
           <Input label="Vermietete Fläche" value={s.wohnflaeche} onChange={v => set('wohnflaeche', v)} suffix="qm" step={0.5} />
+          {!p.isContainer && <Select label="Eigentumsart" value={s.eigentumsart || 'weg'} onChange={v => set('eigentumsart', v)} options={[{ v: 'weg', l: 'WEG / Teileigentum (aufgeteilt)' }, { v: 'gesamt', l: 'Gesamteigentum (nicht aufgeteilt)' }]} />}
+          {!p.isContainer && s.eigentumsart === 'gesamt' && <p className="hint-small">Gesamteigentum = ganzes Gebäude in einem Grundbuchblatt, kein Miteigentumsanteil pro Wohnung. Kein TEA, AfA-Basis ohne Teileigentumsanteil.</p>}
+          <hr />
+          <div className="field-group-label">Energieausweis</div>
+          <Select label="Energieträger" value={s.energietraeger || ''} onChange={v => set('energietraeger', v)} options={[{ v: '', l: '– bitte wählen –' }, { v: 'gas', l: 'Gas' }, { v: 'oel', l: 'Öl' }, { v: 'fernwaerme', l: 'Fernwärme' }, { v: 'waermepumpe', l: 'Wärmepumpe' }, { v: 'strom', l: 'Strom' }, { v: 'pellets', l: 'Pellets / Holz' }, { v: 'sonstige', l: 'Sonstige' }]} />
+          <Select label="Ausweis-Art" value={s.energieausweisArt || ''} onChange={v => set('energieausweisArt', v)} options={[{ v: '', l: '– bitte wählen –' }, { v: 'verbrauch', l: 'Verbrauchsausweis' }, { v: 'bedarf', l: 'Bedarfsausweis' }]} />
+          <Input label="Energiekennwert" value={s.energiekennwert} onChange={v => set('energiekennwert', v)} suffix="kWh/m²a" />
+          <Input label="Effizienzklasse" value={s.energieeffizienzklasse} onChange={v => set('energieeffizienzklasse', v)} type="text" ph="z.B. D" />
+          <Input label="Ausweis gültig bis" value={s.energieausweisGueltigBis} onChange={v => set('energieausweisGueltigBis', v)} type="date" />
+          <hr />
+          <div className="field-group-label">Ausbaureserve / Entwicklungspotenzial</div>
+          <Input label="Potenzialfläche" value={s.ausbaureserveFlaeche} onChange={v => set('ausbaureserveFlaeche', v)} suffix="qm" />
+          <Input label="Beschreibung" value={s.ausbaureserveBeschreibung} onChange={v => set('ausbaureserveBeschreibung', v)} type="text" ph="z.B. DG-Ausbau ca. 146 qm möglich" />
           <hr />
           <button 
             className="btn-reset-section" 
@@ -4332,6 +4580,70 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
             Felder zurücksetzen
           </button>
         </Acc>
+        {p.isContainer && (
+          <Acc icon={<IconObjekt color="#6366f1" />} title="Einheiten" sum={`${einheiten.length} Einheit${einheiten.length !== 1 ? 'en' : ''}`} open={sec === 'einheiten'} toggle={() => setSec(sec === 'einheiten' ? null : 'einheiten')} color="#6366f1">
+            <div style={{padding:'8px 12px',marginBottom:'10px',background:'rgba(99,102,241,0.08)',borderRadius:'6px',fontSize:'11px',color:'var(--text-muted)'}}>
+              ℹ️ Hier verwaltest du die einzelnen Wohnungen dieses Gebäudes. Allgemeine Gebäudedaten gehören in die Abschnitte oben; jede Einheit hat ihre eigenen Werte (Fläche, Miete, ggf. eigenes Darlehen).
+            </div>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'8px'}}>
+                <span style={{fontSize:'13px',fontWeight:'600'}}>🏠 Enthaltene Einheiten ({einheiten.length})</span>
+                {p.saved ? (
+                  <div style={{display:'flex',gap:'6px'}}>
+                    <button onClick={() => setShowAssign(v => !v)} style={{display:'flex',alignItems:'center',gap:'4px',padding:'6px 10px',background:'transparent',color:'#6366f1',border:'1px solid #6366f1',borderRadius:'6px',fontSize:'12px',cursor:'pointer'}}>Bestehende zuordnen</button>
+                    <button onClick={() => onAddEinheit && onAddEinheit(p.id)} style={{display:'flex',alignItems:'center',gap:'4px',padding:'6px 10px',background:'#6366f1',color:'#fff',border:'none',borderRadius:'6px',fontSize:'12px',cursor:'pointer'}}>+ Neue Einheit</button>
+                  </div>
+                ) : (
+                  <span style={{fontSize:'11px',color:'var(--text-muted)'}}>Erst Gebäude speichern</span>
+                )}
+              </div>
+              {showAssign && p.saved && (
+                <div style={{marginBottom:'10px',padding:'10px',border:'1px solid #6366f1',borderRadius:'8px',background:'rgba(99,102,241,0.05)'}}>
+                  <div style={{fontSize:'12px',fontWeight:'600',marginBottom:'6px'}}>Bestehendes Objekt als Einheit zuordnen</div>
+                  {zuordenbar.length === 0 ? (
+                    <div style={{fontSize:'11px',color:'var(--text-muted)'}}>Keine zuordenbaren Objekte. Es werden nur eigenständige, gespeicherte Objekte angezeigt — keine Gebäude und keine bereits zugeordneten Einheiten.</div>
+                  ) : (
+                    <div style={{display:'flex',flexDirection:'column',gap:'4px',maxHeight:'180px',overflowY:'auto'}}>
+                      {zuordenbar.map(o => (
+                        <div key={o.id} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'6px 8px',background:'rgba(255,255,255,0.03)',borderRadius:'6px'}}>
+                          <span style={{fontSize:'12px'}}>{o.stammdaten?.name || 'Unbenannt'}<span style={{color:'var(--text-muted)'}}>{o.stammdaten?.wohnflaeche>0 ? ' · '+Number(o.stammdaten.wohnflaeche).toLocaleString('de-DE', { maximumFractionDigits: 2 })+' m²' : ''}</span></span>
+                          <button onClick={() => onAssignEinheit && onAssignEinheit(o.id, p.id)} style={{padding:'4px 8px',background:'#6366f1',color:'#fff',border:'none',borderRadius:'5px',fontSize:'11px',cursor:'pointer'}}>+ zuordnen</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              {einheiten.length === 0 ? (
+                <div style={{padding:'12px',textAlign:'center',fontSize:'12px',color:'var(--text-muted)',border:'1px dashed var(--border)',borderRadius:'8px'}}>Noch keine Einheiten. {p.saved ? 'Lege die erste Wohnung an.' : 'Speichere das Gebäude, dann kannst du Wohnungen hinzufügen.'}</div>
+              ) : (
+                <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
+                  {einheiten.map(u => (
+                    <div key={u.id} onClick={() => onSelectEinheit && onSelectEinheit(u)} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 12px',background:'rgba(255,255,255,0.03)',border:'1px solid var(--border)',borderRadius:'8px',cursor:'pointer'}}>
+                      <div style={{display:'flex',flexDirection:'column'}}>
+                        <span style={{fontSize:'13px',fontWeight:'500'}}>{u.stammdaten?.name || 'Unbenannte Einheit'}</span>
+                        <span style={{fontSize:'11px',color:'var(--text-muted)'}}>{[u.stammdaten?.wohnungsNr && ('Nr. '+u.stammdaten.wohnungsNr), u.stammdaten?.etage, u.stammdaten?.wohnflaeche>0 && (Number(u.stammdaten.wohnflaeche).toLocaleString('de-DE', { maximumFractionDigits: 2 })+' m²'), u.stammdaten?.kaltmiete>0 && (fmt(u.stammdaten.kaltmiete)+'/Mon.')].filter(Boolean).join(' · ') || 'Keine Details erfasst'}</span>
+                      </div>
+                      <div style={{display:'flex',alignItems:'center',gap:'8px'}} onClick={e => e.stopPropagation()}>
+                        {detachConfirmId === u.id ? (
+                          <>
+                            <span style={{fontSize:'11px',color:'var(--text-muted)'}}>Wirklich lösen?</span>
+                            <button onClick={() => { onDetachEinheit && onDetachEinheit(u.id); setDetachConfirmId(null); }} style={{padding:'3px 9px',background:'#6366f1',color:'#fff',border:'none',borderRadius:'5px',fontSize:'11px',cursor:'pointer'}}>Ja</button>
+                            <button onClick={() => setDetachConfirmId(null)} style={{padding:'3px 9px',background:'transparent',color:'var(--text-muted)',border:'1px solid var(--border)',borderRadius:'5px',fontSize:'11px',cursor:'pointer'}}>Nein</button>
+                          </>
+                        ) : (
+                          <>
+                            <button onClick={() => onDeleteUnit && onDeleteUnit(u.id)} title="Einheit endgültig löschen" style={{padding:'3px 7px',background:'transparent',color:'#ef4444',border:'1px solid rgba(239,68,68,0.4)',borderRadius:'5px',fontSize:'11px',cursor:'pointer'}}>löschen</button>
+                            <button onClick={() => setDetachConfirmId(u.id)} title="Aus Gebäude lösen (wird wieder eigenständiges Objekt)" style={{padding:'3px 7px',background:'transparent',color:'var(--text-muted)',border:'1px solid var(--border)',borderRadius:'5px',fontSize:'11px',cursor:'pointer'}}>lösen</button>
+                            <span style={{fontSize:'14px',color:'var(--text-muted)'}}>›</span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+          </Acc>
+        )}
         <Acc icon={<IconKaufpreis color="#10b981" />} title="Kaufpreis und Verkehrswert" sum={`${fmt(c.kp)} + ${fmt(c.nk)} NK`} open={sec === 'kp'} toggle={() => setSec(sec === 'kp' ? null : 'kp')} color="#10b981">
           <Input label="Kaufpreis Immobilie" value={s.kaufpreisImmobilie} onChange={v => set('kaufpreisImmobilie', v)} suffix="€" step={1000} error={validationErrors.kaufpreisImmobilie} />
           <Input label="Mehrkosten" value={s.mehrkosten} onChange={v => set('mehrkosten', v)} suffix="€" />
@@ -4355,9 +4667,27 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
           </button>
         </Acc>
         <Acc icon={<IconAfa color="#f59e0b" />} title="Grundstück & AfA" sum={`AfA: ${fmt(c.afaGeb + (s.degressiveAfa || 0))}/Jahr`} open={sec === 'afa'} toggle={() => setSec(sec === 'afa' ? null : 'afa')} color="#f59e0b">
+          {/* === Eigentum am Grundstück / Erbbaurecht (v7.7) === */}
+          <div className="field-group-label">Eigentum am Grundstück</div>
+          <div className="mietstatus-checkboxes">
+            <label className="mietstatus-option">
+              <input type="radio" name="erbbau" checked={!s.erbbaurecht} onChange={() => set('erbbaurecht', false)} />
+              <span className="mietstatus-label">Grundstück im Eigentum</span>
+            </label>
+            <label className="mietstatus-option">
+              <input type="radio" name="erbbau" checked={!!s.erbbaurecht} onChange={() => set('erbbaurecht', true)} />
+              <span className="mietstatus-label">🏛 Erbbaurecht</span>
+            </label>
+          </div>
+          {s.erbbaurecht && (<>
+            <Input label="Erbbauzins p.a." value={s.erbbauzins} onChange={v => set('erbbauzins', v)} suffix="€/Jahr" />
+            <Input label="Laufzeit bis" value={s.erbbauLaufzeitEnde} onChange={v => set('erbbauLaufzeitEnde', v)} type="date" />
+            <p className="hint-small">Der Erbbauzins ist als Werbungskosten absetzbar. Da das Grundstück nicht im Eigentum ist, fließt kein Bodenwert-Anteil in die AfA-Basis – die gesamten Anschaffungskosten gelten als Gebäude.</p>
+          </>)}
+          <hr />
           <Input label="Grundstücksgröße" value={s.grundstueckGroesse} onChange={v => set('grundstueckGroesse', v)} suffix="qm" />
-          <Input label="Bodenrichtwert" value={s.bodenrichtwert} onChange={v => set('bodenrichtwert', v)} suffix="€/qm" />
-          {s.typ === 'etw' && <Input label="TEA (WEG)" value={s.teileigentumsanteil} onChange={v => set('teileigentumsanteil', v)} suffix="/10.000" />}
+          {!s.erbbaurecht && <Input label="Bodenrichtwert" value={s.bodenrichtwert} onChange={v => set('bodenrichtwert', v)} suffix="€/qm" />}
+          {s.eigentumsart === 'weg' && !s.erbbaurecht && <Input label="TEA (WEG)" value={s.teileigentumsanteil} onChange={v => set('teileigentumsanteil', v)} suffix="/10.000" />}
           <div className="res"><span>Grundstückswert</span><span>{fmt(c.gwg)}</span></div>
           <div className="res"><span>./. Anteil</span><span>{fmt(c.ga)}</span></div>
           <hr />
@@ -4408,8 +4738,40 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
           disabled={s.nutzung === 'eigengenutzt'}
           onImport={onOpenImport}
         >
+          {p.isContainer && einheiten.length > 0 && (() => {
+            const sum = einheiten.reduce((a, u) => {
+              const us = u.stammdaten || {};
+              a.kaltmiete += us.kaltmiete || 0;
+              a.nebenkostenVorauszahlung += us.nebenkostenVorauszahlung || 0;
+              a.mieteStellplatz += us.mieteStellplatz || 0;
+              a.mieteSonderausstattung += us.mieteSonderausstattung || 0;
+              a.wohnflaeche += us.wohnflaeche || 0;
+              return a;
+            }, { kaltmiete: 0, nebenkostenVorauszahlung: 0, mieteStellplatz: 0, mieteSonderausstattung: 0, wohnflaeche: 0 });
+            const eq = (a, b) => Math.abs((a || 0) - (b || 0)) < 0.01;
+            const matchesAll = eq(s.kaltmiete, sum.kaltmiete) && eq(s.nebenkostenVorauszahlung, sum.nebenkostenVorauszahlung) && eq(s.mieteStellplatz, sum.mieteStellplatz) && eq(s.mieteSonderausstattung, sum.mieteSonderausstattung) && eq(s.wohnflaeche, sum.wohnflaeche);
+            return (
+              <div style={{padding:'12px',marginBottom:'14px',border:'1px solid #6366f1',borderRadius:'8px',background:'rgba(99,102,241,0.06)'}}>
+                <div style={{fontSize:'13px',fontWeight:'600',marginBottom:'8px'}}>📊 Summe aus {einheiten.length} Einheiten</div>
+                <div style={{display:'flex',flexDirection:'column',gap:'4px',fontSize:'12px',marginBottom:'10px'}}>
+                  <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>Kaltmiete</span><b>{fmt(sum.kaltmiete)}/Mon.</b></div>
+                  <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>NK-Vorauszahlung</span><b>{fmt(sum.nebenkostenVorauszahlung)}/Mon.</b></div>
+                  {sum.mieteStellplatz > 0 && <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>Stellplatz</span><b>{fmt(sum.mieteStellplatz)}/Mon.</b></div>}
+                  {sum.mieteSonderausstattung > 0 && <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>Sonderausstattung</span><b>{fmt(sum.mieteSonderausstattung)}/Mon.</b></div>}
+                  <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>Wohnfläche</span><b>{sum.wohnflaeche.toFixed(2)} m²</b></div>
+                </div>
+                {matchesAll ? (
+                  <div style={{fontSize:'11px',color:'#22c55e'}}>✓ Gebäudewerte entsprechen aktuell der Summe der Einheiten.</div>
+                ) : (
+                  <button onClick={() => upd({ ...p, stammdaten: { ...s, kaltmiete: sum.kaltmiete, nebenkostenVorauszahlung: sum.nebenkostenVorauszahlung, mieteStellplatz: sum.mieteStellplatz, mieteSonderausstattung: sum.mieteSonderausstattung, wohnflaeche: sum.wohnflaeche } })} style={{padding:'7px 12px',background:'#6366f1',color:'#fff',border:'none',borderRadius:'6px',fontSize:'12px',cursor:'pointer'}}>In Gebäude übernehmen</button>
+                )}
+                <p style={{fontSize:'11px',color:'var(--text-muted)',margin:'8px 2px 0'}}>Übernimmt Kaltmiete, NK, Stellplatz, Sonderausstattung und Wohnfläche als Gebäudesumme. Diese Werte fließen in Rendite & Steuer ein und bleiben danach manuell änderbar.</p>
+              </div>
+            );
+          })()}
           <div className="field-group-label">Aktueller Mieter</div>
           <Input label="Name Mieter" value={s.mieterName} onChange={v => set('mieterName', v)} type="text" ph="z.B. Familie Müller" />
+          <Input label="Anzahl Personen" value={s.personenzahl} onChange={v => set('personenzahl', v)} suffix="Pers." />
           
           <div className="mietstatus-checkboxes">
             <label className="mietstatus-option">
@@ -4746,6 +5108,13 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
           return parts.join(', ') || `${s.eigenkapitalAnteil}% EK`;
         })()} open={sec === 'fin'} toggle={() => setSec(sec === 'fin' ? null : 'fin')} color="#3b82f6" onImport={() => setSmartImportModal(true)}>
           
+          {(p.isContainer || parentGebaeude) && (
+            <div style={{padding:'8px 12px',marginBottom:'12px',background:'rgba(59,130,246,0.08)',border:'1px solid rgba(59,130,246,0.2)',borderRadius:'6px',fontSize:'11px',color:'var(--text-muted)'}}>
+              {p.isContainer
+                ? '🏢 Darlehen, die du hier erfasst, gelten für das gesamte Gebäude (alle Einheiten zusammen). Für ein Darlehen einer einzelnen Wohnung öffne die jeweilige Einheit.'
+                : '🏠 Darlehen, die du hier erfasst, gelten nur für diese Einheit. Ein gemeinsames Darlehen für das ganze Gebäude erfasst du beim Gebäude selbst.'}
+            </div>
+          )}
           {/* Eigenkapital-Details */}
           <div className="field-group-label">Eigenkapital</div>
           <Input label="EK-Anteil" value={s.eigenkapitalAnteil} onChange={v => set('eigenkapitalAnteil', v)} suffix="%" step={5} />
@@ -5656,7 +6025,9 @@ const Steuer = ({ p, upd, c }) => {
   const afaG = jsk < 100 / p.stammdaten.afaSatz ? c.afaGeb : 0;
   const afaS = jsk < 10 ? c.afaSA : 0;
   const afaTot = afaG + afaS;
-  const wkTot = yd.wk.reduce((a, x) => a + (x.betrag || 0), 0);
+  // Erbbauzins automatisch als Werbungskosten berücksichtigen (falls Erbbaurecht)
+  const erbbauzinsJahr = p.stammdaten.erbbaurecht ? (p.stammdaten.erbbauzins || 0) : 0;
+  const wkTot = yd.wk.reduce((a, x) => a + (x.betrag || 0), 0) + erbbauzinsJahr;
 
   // Einnahmen nur aus bestätigten Feldern berechnen
   const confirmedVal = (field) => isFieldConfirmed(field) ? (yd[field] || 0) : 0;
@@ -5669,7 +6040,7 @@ const Steuer = ({ p, upd, c }) => {
   const ExportView = () => {
     const s = p.stammdaten;
     const gwg = (s.grundstueckGroesse || 0) * (s.bodenrichtwert || 0);
-    const ga = s.teileigentumsanteil > 0 ? (s.teileigentumsanteil / 10000) * gwg : 0;
+    const ga = s.erbbaurecht ? 0 : (s.eigentumsart === 'gesamt' ? gwg : (s.teileigentumsanteil > 0 ? (s.teileigentumsanteil / 10000) * gwg : 0));
     const [copied, setCopied] = useState(false);
     
     const exportData = { s, c, yr, yd, afaG, afaS, afaTot, wkTot, ein, erg, stEff, gwg, ga, BUNDESLAENDER };
@@ -6168,7 +6539,7 @@ const Dashboard = ({ immobilien, onSelectImmo, aktiveBeteiligte = [], beteiligte
   };
 
   // Berechnung für jede Immobilie
-  const immoData = immobilien.map(immo => {
+  const immoData = immobilien.filter(immo => !immo.parentId).map(immo => {
     const s = immo.stammdaten;
     const kp = (s.kaufpreisImmobilie || 0) + (s.mehrkosten || 0) + (s.kaufpreisStellplatz || 0);
     const nk = (s.maklerProvision || 0) + (s.grunderwerbsteuer || 0) + (s.notarkosten || 0);
@@ -6182,7 +6553,7 @@ const Dashboard = ({ immobilien, onSelectImmo, aktiveBeteiligte = [], beteiligte
     const fk = darlehen.length > 0 ? darlehen.reduce((sum, d) => sum + (d.restschuld || d.betrag || 0), 0) : fkTheo;
     const ann = fkTheo * ((s.zinssatz + s.tilgung) / 100);
     const gwg = (s.grundstueckGroesse || 0) * (s.bodenrichtwert || 0);
-    const ga = s.teileigentumsanteil > 0 ? (s.teileigentumsanteil / 10000) * gwg : 0;
+    const ga = s.erbbaurecht ? 0 : (s.eigentumsart === 'gesamt' ? gwg : (s.teileigentumsanteil > 0 ? (s.teileigentumsanteil / 10000) * gwg : 0));
     const afaBasis = ak - ga;
     const afaGeb = afaBasis * ((s.afaSatz || 3) / 100);
     const saSumme = s.sonderausstattung?.reduce((a, i) => a + (i.betrag || 0), 0) || 0;
@@ -6296,6 +6667,8 @@ const Dashboard = ({ immobilien, onSelectImmo, aktiveBeteiligte = [], beteiligte
   }), { kp: 0, ak: 0, jm: 0, ek: 0, fk: 0, ann: 0, afaGes: 0, qm: 0 });
 
   const avgRendite = totals.kp > 0 ? totals.jm / totals.kp : 0;
+  const weCount = filtered.reduce((acc, i) => acc + (i.isContainer ? immobilien.filter(x => x.parentId === i.id).length : 1), 0);
+  const gebaeudeCount = filtered.filter(i => i.isContainer).length;
 
   if (immobilien.length === 0) {
     return (
@@ -6407,6 +6780,14 @@ const Dashboard = ({ immobilien, onSelectImmo, aktiveBeteiligte = [], beteiligte
             <span>Vermietete Fläche</span>
             <b>{totals.qm.toLocaleString('de-DE')} qm</b>
             <small>Ø {fmt(totals.kp / Math.max(totals.qm, 1))}/qm</small>
+          </div>
+        </div>
+        <div className="dash-total-card">
+          <div className="dtc-icon"><IconHome color="#6366f1" /></div>
+          <div className="dtc-info">
+            <span>Wohneinheiten (WE)</span>
+            <b>{weCount}</b>
+            <small>{gebaeudeCount > 0 ? `inkl. ${gebaeudeCount} Gebäude` : 'Einheiten gesamt'}</small>
           </div>
         </div>
       </div>
@@ -6626,6 +7007,7 @@ const Dashboard = ({ immobilien, onSelectImmo, aktiveBeteiligte = [], beteiligte
           >
             <div className="dic-header">
               <span className="dic-type-tag" style={{ background: TYP_COLORS[i.stammdaten.typ]?.bg, borderColor: TYP_COLORS[i.stammdaten.typ]?.border, color: TYP_COLORS[i.stammdaten.typ]?.text }}>{getTypLabel(i.stammdaten.typ)}</span>
+              {i.isContainer && (<span className="dic-type-tag" style={{ background: 'rgba(99,102,241,0.12)', borderColor: '#6366f1', color: '#818cf8', marginLeft: '6px' }}>🏢 {immobilien.filter(x => x.parentId === i.id).length} Wohnungen{i.stammdaten.wohnflaeche > 0 ? ' · ' + Number(i.stammdaten.wohnflaeche).toLocaleString('de-DE', { maximumFractionDigits: 2 }) + ' m²' : ''}</span>)}
               <div className="dic-title">
                 <strong>{i.stammdaten.name}</strong>
                 <small>{i.stammdaten.adresse || 'Keine Adresse'}</small>
@@ -6971,6 +7353,27 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
     setValidationErrors({});
   };
   
+  const onAddEinheit = (parentId) => {
+    const parent = saved.find(x => x.id === parentId);
+    const ea = parent?.stammdaten?.eigentumsart || 'weg';
+    setCurr({ ...createEmpty(), parentId, isContainer: false, stammdaten: { ...createEmpty().stammdaten, eigentumsart: ea } });
+    setTab('stamm');
+    setModal(false);
+    setHistory([]);
+    setRedoHistory([]);
+    setValidationErrors({});
+  };
+
+  const onAssignEinheit = (unitId, parentId) => {
+    const updated = saved.map(x => x.id === unitId ? { ...x, parentId, isContainer: false } : x);
+    setSaved(updated); save(updated);
+  };
+
+  const onDetachEinheit = (unitId) => {
+    const updated = saved.map(x => x.id === unitId ? { ...x, parentId: null } : x);
+    setSaved(updated); save(updated);
+  };
+
   const onSave = () => {
     if (!curr?.stammdaten?.name) return;
     const errors = validate(curr.stammdaten);
@@ -6995,8 +7398,11 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
   
   const confirmDelete = () => {
     if (deleteConfirm) {
-      setSaved(saved.filter(x => x.id !== deleteConfirm));
-      if (curr?.id === deleteConfirm) setCurr(null);
+      const target = saved.find(x => x.id === deleteConfirm);
+      const toRemove = new Set([deleteConfirm]);
+      if (target?.isContainer) saved.filter(x => x.parentId === deleteConfirm).forEach(ch => toRemove.add(ch.id));
+      setSaved(saved.filter(x => !toRemove.has(x.id)));
+      if (curr && toRemove.has(curr.id)) setCurr(null);
       setDeleteConfirm(null);
       setModal(false);
     }
@@ -8407,7 +8813,7 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
           </div>
         ) : (
           <>
-            {tab === 'stamm' && <Stamm p={curr} upd={onUpd} c={c} onSave={onSave} saved={isSaved} onOpenImport={() => setImportModal(true)} onDelete={() => setDeleteConfirm(curr?.id)} onDiscard={() => { setCurr(null); setTab('dash'); }} validationErrors={validationErrors} beteiligte={beteiligte} immobilien={saved} onSmartImport={handleSmartImport} />}
+            {tab === 'stamm' && <Stamm p={curr} upd={onUpd} c={c} onSave={onSave} saved={isSaved} onOpenImport={() => setImportModal(true)} onDelete={() => setDeleteConfirm(curr?.id)} onDiscard={() => { setCurr(null); setTab('dash'); }} validationErrors={validationErrors} beteiligte={beteiligte} immobilien={saved} onSmartImport={handleSmartImport} onAddEinheit={onAddEinheit} onSelectEinheit={onSelect} onAssignEinheit={onAssignEinheit} onDetachEinheit={onDetachEinheit} onDeleteUnit={onDel} />}
             {tab === 'rendite' && isSaved && <Rendite p={curr} upd={onUpd} c={c} />}
             {tab === 'steuer' && isSaved && <Steuer p={curr} upd={onUpd} c={c} />}
           </>
@@ -8428,7 +8834,7 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
         setTab('stamm');
         setModal(false);
       }} />}
-      {importModal && <ImportModal onClose={() => setImportModal(false)} onImport={onImport} existingImmo={curr?.saved ? curr : null} />}
+      {importModal && <ImportModal onClose={() => setImportModal(false)} onImport={onImport} existingImmo={curr?.saved ? curr : null} existingEinheiten={curr?.saved ? saved.filter(x => x.parentId === curr.id) : []} />}
       {beteiligteModal && (
         <BeteiligteModal 
           beteiligte={beteiligte}
@@ -8459,7 +8865,7 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
             <div className="confirm-content">
               <span className="confirm-icon"><IconTrash color="#ef4444" /></span>
               <h3>Immobilie löschen?</h3>
-              <p>Diese Aktion kann nicht rückgängig gemacht werden.</p>
+              <p>{(() => { const t = saved.find(x => x.id === deleteConfirm); const ch = t?.isContainer ? saved.filter(x => x.parentId === deleteConfirm).length : 0; return ch > 0 ? `Dieses Gebäude enthält ${ch} Einheit(en), die ebenfalls gelöscht werden. Diese Aktion kann nicht rückgängig gemacht werden.` : 'Diese Aktion kann nicht rückgängig gemacht werden.'; })()}</p>
               <div className="confirm-btns">
                 <button className="btn-cancel" onClick={() => setDeleteConfirm(null)}>Abbrechen</button>
                 <button className="btn-delete" onClick={confirmDelete}>Löschen</button>
