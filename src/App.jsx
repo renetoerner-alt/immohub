@@ -4346,7 +4346,7 @@ const exportPortfolio = (filtered, totals, avgRendite) => {
 };
 
 // Stammdaten
-const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, validationErrors = {}, beteiligte = [], immobilien = [], onSmartImport, onAddEinheit, onSelectEinheit, onAssignEinheit, onDetachEinheit, onDeleteUnit }) => {
+const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, validationErrors = {}, beteiligte = [], immobilien = [], onSmartImport, onAddEinheit, onSelectEinheit, onAssignEinheit, onDetachEinheit, onDeleteUnit, onUpdateUnit }) => {
   const [sec, setSec] = useState(null);
   const [secExpanded, setSecExpanded] = useState(false);
   const [darlehenImportModal, setDarlehenImportModal] = useState(false);
@@ -4357,6 +4357,9 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
   const [archiveConfirm, setArchiveConfirm] = useState(false);
   const [showAssign, setShowAssign] = useState(false);
   const [detachConfirmId, setDetachConfirmId] = useState(null);
+  const [kpUnitOpen, setKpUnitOpen] = useState(null);
+  const [mieteUnitOpen, setMieteUnitOpen] = useState(null);
+  const [finUnitOpen, setFinUnitOpen] = useState(null);
   const [resetConfirm, setResetConfirm] = useState(null); // 'objekt' | 'kaufpreis' | 'miete' | etc.
   const s = p.stammdaten;
   const einheiten = (immobilien || []).filter(x => x.parentId === p.id);
@@ -4645,6 +4648,37 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
           </Acc>
         )}
         <Acc icon={<IconKaufpreis color="#10b981" />} title="Kaufpreis und Verkehrswert" sum={`${fmt(c.kp)} + ${fmt(c.nk)} NK`} open={sec === 'kp'} toggle={() => setSec(sec === 'kp' ? null : 'kp')} color="#10b981">
+          {p.isContainer && einheiten.length > 0 && (() => {
+            const sum = einheiten.reduce((a, u) => {
+              const us = u.stammdaten || {};
+              a.kaufpreisImmobilie += us.kaufpreisImmobilie || 0;
+              a.mehrkosten += us.mehrkosten || 0;
+              a.kaufpreisStellplatz += us.kaufpreisStellplatz || 0;
+              a.verkehrswert += us.verkehrswert || 0;
+              return a;
+            }, { kaufpreisImmobilie: 0, mehrkosten: 0, kaufpreisStellplatz: 0, verkehrswert: 0 });
+            const hatWerte = sum.kaufpreisImmobilie > 0 || sum.kaufpreisStellplatz > 0 || sum.verkehrswert > 0;
+            if (!hatWerte) return null;
+            const eq = (a, b) => Math.abs((a || 0) - (b || 0)) < 0.01;
+            const matchesAll = eq(s.kaufpreisImmobilie, sum.kaufpreisImmobilie) && eq(s.mehrkosten, sum.mehrkosten) && eq(s.kaufpreisStellplatz, sum.kaufpreisStellplatz) && eq(s.verkehrswert, sum.verkehrswert);
+            return (
+              <div style={{padding:'12px',marginBottom:'14px',border:'1px solid #10b981',borderRadius:'8px',background:'rgba(16,185,129,0.06)'}}>
+                <div style={{fontSize:'13px',fontWeight:'600',marginBottom:'8px'}}>📊 Summe aus {einheiten.length} Einheiten</div>
+                <div style={{display:'flex',flexDirection:'column',gap:'4px',fontSize:'12px',marginBottom:'10px'}}>
+                  <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>Kaufpreis Immobilie</span><b>{fmt(sum.kaufpreisImmobilie)}</b></div>
+                  {sum.mehrkosten > 0 && <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>Mehrkosten</span><b>{fmt(sum.mehrkosten)}</b></div>}
+                  {sum.kaufpreisStellplatz > 0 && <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>Stellplatz</span><b>{fmt(sum.kaufpreisStellplatz)}</b></div>}
+                  {sum.verkehrswert > 0 && <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>Verkehrswert</span><b>{fmt(sum.verkehrswert)}</b></div>}
+                </div>
+                {matchesAll ? (
+                  <div style={{fontSize:'11px',color:'#22c55e'}}>✓ Gebäudewerte entsprechen der Summe der Einheiten.</div>
+                ) : (
+                  <button onClick={() => upd({ ...p, stammdaten: { ...s, kaufpreisImmobilie: sum.kaufpreisImmobilie, mehrkosten: sum.mehrkosten, kaufpreisStellplatz: sum.kaufpreisStellplatz, verkehrswert: sum.verkehrswert } })} style={{padding:'7px 12px',background:'#10b981',color:'#fff',border:'none',borderRadius:'6px',fontSize:'12px',cursor:'pointer'}}>In Gebäude übernehmen</button>
+                )}
+                <p style={{fontSize:'11px',color:'var(--text-muted)',margin:'8px 2px 0'}}>Summiert die Kaufpreise/Werte der Einheiten als Gebäudesumme. Die Einzelwerte bleiben pro Einheit erhalten; in der Portfolio-Übersicht zählt nur das Gebäude (keine Doppelzählung).</p>
+              </div>
+            );
+          })()}
           <Input label="Kaufpreis Immobilie" value={s.kaufpreisImmobilie} onChange={v => set('kaufpreisImmobilie', v)} suffix="€" step={1000} error={validationErrors.kaufpreisImmobilie} />
           <Input label="Mehrkosten" value={s.mehrkosten} onChange={v => set('mehrkosten', v)} suffix="€" />
           <Input label="Kaufpreis Stellplatz" value={s.kaufpreisStellplatz} onChange={v => set('kaufpreisStellplatz', v)} suffix="€" error={validationErrors.kaufpreisStellplatz} />
@@ -4658,6 +4692,38 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
           <div className="field-group-label">Aktueller Verkehrswert</div>
           <Input label="Verkehrswert" value={s.verkehrswert} onChange={v => set('verkehrswert', v)} suffix="€" error={validationErrors.verkehrswert} />
           <Input label="Bewertungsdatum" value={s.verkehrswertDatum} onChange={v => set('verkehrswertDatum', v)} type="date" />
+          {p.isContainer && einheiten.length > 0 && (
+            <div style={{marginTop:'16px',paddingTop:'12px',borderTop:'1px solid var(--border)'}}>
+              <div style={{fontSize:'12px',fontWeight:'600',marginBottom:'8px'}}>🏠 Kaufpreis je Einheit ({einheiten.length})</div>
+              <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
+                {einheiten.map(u => {
+                  const us = u.stammdaten || {};
+                  const ukp = (us.kaufpreisImmobilie || 0) + (us.mehrkosten || 0) + (us.kaufpreisStellplatz || 0);
+                  const open = kpUnitOpen === u.id;
+                  return (
+                    <div key={u.id} style={{border:'1px solid var(--border)',borderRadius:'8px',overflow:'hidden'}}>
+                      <div onClick={() => setKpUnitOpen(open ? null : u.id)} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 12px',cursor:'pointer',background:'rgba(255,255,255,0.02)'}}>
+                        <span style={{fontSize:'13px',fontWeight:'500'}}>{us.name || 'Einheit'}{us.wohnungsNr ? ` · Nr. ${us.wohnungsNr}` : ''}</span>
+                        <span style={{display:'flex',alignItems:'center',gap:'10px'}}><b style={{fontSize:'13px'}}>{fmt(ukp)}</b><span style={{color:'var(--text-muted)'}}>{open ? '▾' : '▸'}</span></span>
+                      </div>
+                      {open && (
+                        <div style={{padding:'10px 12px',borderTop:'1px solid var(--border)'}}>
+                          <Input label="Kaufpreis Immobilie" value={us.kaufpreisImmobilie} onChange={v => onUpdateUnit && onUpdateUnit(u.id, { kaufpreisImmobilie: v })} suffix="€" step={1000} />
+                          <Input label="Mehrkosten" value={us.mehrkosten} onChange={v => onUpdateUnit && onUpdateUnit(u.id, { mehrkosten: v })} suffix="€" />
+                          <Input label="Kaufpreis Stellplatz" value={us.kaufpreisStellplatz} onChange={v => onUpdateUnit && onUpdateUnit(u.id, { kaufpreisStellplatz: v })} suffix="€" />
+                          <div className="res"><span>= Kaufpreis</span><span>{fmt(ukp)}</span></div>
+                          <hr />
+                          <Input label="Verkehrswert" value={us.verkehrswert} onChange={v => onUpdateUnit && onUpdateUnit(u.id, { verkehrswert: v })} suffix="€" />
+                          <Input label="Bewertungsdatum" value={us.verkehrswertDatum} onChange={v => onUpdateUnit && onUpdateUnit(u.id, { verkehrswertDatum: v })} type="date" />
+                          <div style={{marginTop:'8px'}}><button onClick={() => onSelectEinheit && onSelectEinheit(u)} style={{padding:'5px 10px',background:'transparent',color:'#6366f1',border:'1px solid #6366f1',borderRadius:'6px',fontSize:'11px',cursor:'pointer'}}>Komplette Einheit öffnen →</button></div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           <hr />
           <button className="btn-reset-section" onClick={() => setResetConfirm('kaufpreis')}>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -4769,6 +4835,36 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
               </div>
             );
           })()}
+          {p.isContainer && einheiten.length > 0 && (
+            <div style={{marginBottom:'14px'}}>
+              <div style={{fontSize:'12px',fontWeight:'600',marginBottom:'8px'}}>🏠 Miete je Einheit ({einheiten.length})</div>
+              <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
+                {einheiten.map(u => {
+                  const us = u.stammdaten || {};
+                  const open = mieteUnitOpen === u.id;
+                  return (
+                    <div key={u.id} style={{border:'1px solid var(--border)',borderRadius:'8px',overflow:'hidden'}}>
+                      <div onClick={() => setMieteUnitOpen(open ? null : u.id)} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 12px',cursor:'pointer',background:'rgba(255,255,255,0.02)'}}>
+                        <span style={{fontSize:'13px',fontWeight:'500'}}>{us.name || 'Einheit'}{us.wohnungsNr ? ` · Nr. ${us.wohnungsNr}` : ''}{us.mieterName ? ` · ${us.mieterName}` : ''}</span>
+                        <span style={{display:'flex',alignItems:'center',gap:'10px'}}><b className="pos" style={{fontSize:'13px'}}>{fmt(us.kaltmiete || 0)}/Mon.</b><span style={{color:'var(--text-muted)'}}>{open ? '▾' : '▸'}</span></span>
+                      </div>
+                      {open && (
+                        <div style={{padding:'10px 12px',borderTop:'1px solid var(--border)'}}>
+                          <Input label="Name Mieter" value={us.mieterName} onChange={v => onUpdateUnit && onUpdateUnit(u.id, { mieterName: v })} type="text" ph="z.B. Familie Müller" />
+                          <Input label="Anzahl Personen" value={us.personenzahl} onChange={v => onUpdateUnit && onUpdateUnit(u.id, { personenzahl: v })} suffix="Pers." />
+                          <Input label="Kaltmiete" value={us.kaltmiete} onChange={v => onUpdateUnit && onUpdateUnit(u.id, { kaltmiete: v })} suffix="€/Mon." />
+                          <Input label="NK-Vorauszahlung" value={us.nebenkostenVorauszahlung} onChange={v => onUpdateUnit && onUpdateUnit(u.id, { nebenkostenVorauszahlung: v })} suffix="€/Mon." />
+                          <Input label="Stellplatz" value={us.mieteStellplatz} onChange={v => onUpdateUnit && onUpdateUnit(u.id, { mieteStellplatz: v })} suffix="€/Mon." />
+                          <div style={{marginTop:'8px'}}><button onClick={() => onSelectEinheit && onSelectEinheit(u)} style={{padding:'5px 10px',background:'transparent',color:'#6366f1',border:'1px solid #6366f1',borderRadius:'6px',fontSize:'11px',cursor:'pointer'}}>Komplette Einheit öffnen →</button></div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          {!p.isContainer && (<>
           <div className="field-group-label">Aktueller Mieter</div>
           <Input label="Name Mieter" value={s.mieterName} onChange={v => set('mieterName', v)} type="text" ph="z.B. Familie Müller" />
           <Input label="Anzahl Personen" value={s.personenzahl} onChange={v => set('personenzahl', v)} suffix="Pers." />
@@ -5088,7 +5184,7 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
               <button className="btn-add" onClick={() => upd({ ...p, miethistorie: [...(p.miethistorie || []), { von: '', bis: '', kaltmiete: 0, nebenkosten: 0, stellplatz: 0, sonstiges: 0, grund: '' }] })}>+ Mietperiode hinzufügen</button>
             </div>
           )}
-          
+          </>)}
           <hr />
           <button className="btn-reset-section" onClick={() => setResetConfirm('miete')}>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -5115,6 +5211,53 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
                 : '🏠 Darlehen, die du hier erfasst, gelten nur für diese Einheit. Ein gemeinsames Darlehen für das ganze Gebäude erfasst du beim Gebäude selbst.'}
             </div>
           )}
+          {p.isContainer && (() => {
+            const allLoans = [...(p.darlehen || []), ...einheiten.flatMap(u => u.darlehen || [])];
+            const rate = (arr) => arr.reduce((a, d) => a + (d.monatsrate > 0 ? d.monatsrate : (d.betrag > 0 && d.zinssatz > 0 ? d.betrag * ((d.zinssatz + (d.tilgung || 0)) / 100) / 12 : 0)), 0);
+            const sumBetrag = allLoans.reduce((a, d) => a + (d.betrag || 0), 0);
+            const sumRest = allLoans.reduce((a, d) => a + (d.restschuld || d.betrag || 0), 0);
+            return (
+              <div style={{padding:'12px',marginBottom:'14px',border:'1px solid #3b82f6',borderRadius:'8px',background:'rgba(59,130,246,0.06)'}}>
+                <div style={{fontSize:'13px',fontWeight:'600',marginBottom:'8px'}}>📊 Finanzierung gesamt ({allLoans.length} Darlehen)</div>
+                <div style={{display:'flex',flexDirection:'column',gap:'4px',fontSize:'12px'}}>
+                  <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>Darlehenssumme</span><b>{fmt(sumBetrag)}</b></div>
+                  <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>Restschuld gesamt</span><b>{fmt(sumRest)}</b></div>
+                  <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>Monatsrate gesamt</span><b>{fmt(rate(allLoans))}/Mon.</b></div>
+                </div>
+                {einheiten.length > 0 && (
+                  <div style={{marginTop:'10px'}}>
+                    <div style={{fontSize:'11px',fontWeight:'600',marginBottom:'6px',color:'var(--text-muted)'}}>Darlehen je Einheit</div>
+                    <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
+                      {einheiten.map(u => {
+                        const ul = u.darlehen || [];
+                        const uRest = ul.reduce((a, d) => a + (d.restschuld || d.betrag || 0), 0);
+                        const open = finUnitOpen === u.id;
+                        return (
+                          <div key={u.id} style={{border:'1px solid var(--border)',borderRadius:'8px',overflow:'hidden'}}>
+                            <div onClick={() => setFinUnitOpen(open ? null : u.id)} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'9px 11px',cursor:'pointer',background:'rgba(255,255,255,0.02)'}}>
+                              <span style={{fontSize:'12px',fontWeight:'500'}}>{u.stammdaten?.name || 'Einheit'}{u.stammdaten?.wohnungsNr ? ` · Nr. ${u.stammdaten.wohnungsNr}` : ''} · {ul.length} Darlehen</span>
+                              <span style={{display:'flex',alignItems:'center',gap:'8px'}}><b style={{fontSize:'12px'}}>{fmt(uRest)}</b><span style={{color:'var(--text-muted)'}}>{open ? '▾' : '▸'}</span></span>
+                            </div>
+                            {open && (
+                              <div style={{padding:'8px 11px',borderTop:'1px solid var(--border)',fontSize:'12px'}}>
+                                {ul.length === 0 ? (
+                                  <div style={{color:'var(--text-muted)'}}>Kein Darlehen erfasst.</div>
+                                ) : ul.map((d, di) => (
+                                  <div key={di} style={{display:'flex',justifyContent:'space-between',padding:'2px 0'}}><span style={{color:'var(--text-muted)'}}>{d.name || d.institut || 'Darlehen'}</span><span>{fmt(d.restschuld || d.betrag || 0)} · {fmt(d.monatsrate || 0)}/Mon.</span></div>
+                                ))}
+                                <div style={{marginTop:'6px'}}><button onClick={() => onSelectEinheit && onSelectEinheit(u)} style={{padding:'4px 9px',background:'transparent',color:'#3b82f6',border:'1px solid #3b82f6',borderRadius:'6px',fontSize:'11px',cursor:'pointer'}}>Darlehen dieser Einheit bearbeiten →</button></div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+                <p style={{fontSize:'11px',color:'var(--text-muted)',margin:'8px 2px 0'}}>Summe über gemeinsame Gebäude-Darlehen (unten) und die Darlehen der einzelnen Einheiten.</p>
+              </div>
+            );
+          })()}
           {/* Eigenkapital-Details */}
           <div className="field-group-label">Eigenkapital</div>
           <Input label="EK-Anteil" value={s.eigenkapitalAnteil} onChange={v => set('eigenkapitalAnteil', v)} suffix="%" step={5} />
@@ -6550,7 +6693,9 @@ const Dashboard = ({ immobilien, onSelectImmo, aktiveBeteiligte = [], beteiligte
     const ek = ak * (s.eigenkapitalAnteil / 100);
     const fkTheo = ak - ek; // theoretischer FK-Bedarf
     const darlehen = immo.darlehen || [];
-    const fk = darlehen.length > 0 ? darlehen.reduce((sum, d) => sum + (d.restschuld || d.betrag || 0), 0) : fkTheo;
+    const _childLoans = immo.isContainer ? immobilien.filter(x => x.parentId === immo.id).flatMap(u => u.darlehen || []) : [];
+    const _allLoans = [...darlehen, ..._childLoans];
+    const fk = _allLoans.length > 0 ? _allLoans.reduce((sum, d) => sum + (d.restschuld || d.betrag || 0), 0) : fkTheo;
     const ann = fkTheo * ((s.zinssatz + s.tilgung) / 100);
     const gwg = (s.grundstueckGroesse || 0) * (s.bodenrichtwert || 0);
     const ga = s.erbbaurecht ? 0 : (s.eigentumsart === 'gesamt' ? gwg : (s.teileigentumsanteil > 0 ? (s.teileigentumsanteil / 10000) * gwg : 0));
@@ -6575,7 +6720,7 @@ const Dashboard = ({ immobilien, onSelectImmo, aktiveBeteiligte = [], beteiligte
     const zinsbindungWarning = getZinsbindungWarning(immo);
     
     // Monatliche Darlehensrate berechnen
-    const darlehensRate = (immo.darlehen || []).reduce((sum, d) => sum + (d.monatsrate || 0), 0);
+    const darlehensRate = _allLoans.reduce((sum, d) => sum + (d.monatsrate > 0 ? d.monatsrate : (d.betrag > 0 && d.zinssatz > 0 ? d.betrag * ((d.zinssatz + (d.tilgung || 0)) / 100) / 12 : 0)), 0);
     
     return { 
       ...immo, 
@@ -6669,6 +6814,7 @@ const Dashboard = ({ immobilien, onSelectImmo, aktiveBeteiligte = [], beteiligte
   const avgRendite = totals.kp > 0 ? totals.jm / totals.kp : 0;
   const weCount = filtered.reduce((acc, i) => acc + (i.isContainer ? immobilien.filter(x => x.parentId === i.id).length : 1), 0);
   const gebaeudeCount = filtered.filter(i => i.isContainer).length;
+  const darlehensRateMonat = filtered.reduce((acc, i) => acc + (i.darlehensRate || 0), 0);
 
   if (immobilien.length === 0) {
     return (
@@ -6788,6 +6934,14 @@ const Dashboard = ({ immobilien, onSelectImmo, aktiveBeteiligte = [], beteiligte
             <span>Wohneinheiten (WE)</span>
             <b>{weCount}</b>
             <small>{gebaeudeCount > 0 ? `inkl. ${gebaeudeCount} Gebäude` : 'Einheiten gesamt'}</small>
+          </div>
+        </div>
+        <div className="dash-total-card">
+          <div className="dtc-icon"><IconFinanz color="#ef4444" /></div>
+          <div className="dtc-info">
+            <span>Darlehensrate p.a.</span>
+            <b>{fmt(darlehensRateMonat * 12)}</b>
+            <small>{fmt(darlehensRateMonat)} / Monat</small>
           </div>
         </div>
       </div>
@@ -7375,6 +7529,11 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
 
   const onDetachEinheit = (unitId) => {
     const updated = saved.map(x => x.id === unitId ? { ...x, parentId: null } : x);
+    setSaved(updated); save(updated);
+  };
+
+  const onUpdateUnit = (unitId, partial) => {
+    const updated = saved.map(x => x.id === unitId ? { ...x, stammdaten: { ...x.stammdaten, ...partial } } : x);
     setSaved(updated); save(updated);
   };
 
@@ -8817,7 +8976,7 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
           </div>
         ) : (
           <>
-            {tab === 'stamm' && <Stamm p={curr} upd={onUpd} c={c} onSave={onSave} saved={isSaved} onOpenImport={() => setImportModal(true)} onDelete={() => setDeleteConfirm(curr?.id)} onDiscard={() => { setCurr(null); setTab('dash'); }} validationErrors={validationErrors} beteiligte={beteiligte} immobilien={saved} onSmartImport={handleSmartImport} onAddEinheit={onAddEinheit} onSelectEinheit={onSelect} onAssignEinheit={onAssignEinheit} onDetachEinheit={onDetachEinheit} onDeleteUnit={onDel} />}
+            {tab === 'stamm' && <Stamm p={curr} upd={onUpd} c={c} onSave={onSave} saved={isSaved} onOpenImport={() => setImportModal(true)} onDelete={() => setDeleteConfirm(curr?.id)} onDiscard={() => { setCurr(null); setTab('dash'); }} validationErrors={validationErrors} beteiligte={beteiligte} immobilien={saved} onSmartImport={handleSmartImport} onAddEinheit={onAddEinheit} onSelectEinheit={onSelect} onAssignEinheit={onAssignEinheit} onDetachEinheit={onDetachEinheit} onDeleteUnit={onDel} onUpdateUnit={onUpdateUnit} />}
             {tab === 'rendite' && isSaved && <Rendite p={curr} upd={onUpd} c={c} />}
             {tab === 'steuer' && isSaved && <Steuer p={curr} upd={onUpd} c={c} />}
           </>
