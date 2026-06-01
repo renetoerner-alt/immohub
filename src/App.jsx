@@ -4346,7 +4346,7 @@ const exportPortfolio = (filtered, totals, avgRendite) => {
 };
 
 // Stammdaten
-const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, validationErrors = {}, beteiligte = [], immobilien = [], onSmartImport, onAddEinheit, onSelectEinheit, onAssignEinheit, onDetachEinheit, onDeleteUnit, onUpdateUnit }) => {
+const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, validationErrors = {}, beteiligte = [], immobilien = [], onSmartImport, onAddEinheit, onSelectEinheit, onAssignEinheit, onDetachEinheit, onDeleteUnit, onUpdateUnit, onSplitToUnit, onConvertToContainer }) => {
   const [sec, setSec] = useState(null);
   const [secExpanded, setSecExpanded] = useState(false);
   const [darlehenImportModal, setDarlehenImportModal] = useState(false);
@@ -4506,7 +4506,7 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
                 <span style={{fontSize:'13px',fontWeight:!p.isContainer?'600':'400'}}>Eigenständige Einheit</span>
               </label>
               <label style={{flex:1,display:'flex',alignItems:'center',gap:'8px',padding:'8px 10px',background:p.isContainer?'rgba(99,102,241,0.15)':'transparent',border:`1px solid ${p.isContainer?'#6366f1':'var(--border)'}`,borderRadius:'6px',cursor:'pointer'}}>
-                <input type="radio" name="immo-typ" checked={!!p.isContainer} onChange={() => upd({...p, isContainer: true})} style={{accentColor:'#6366f1'}}/>
+                <input type="radio" name="immo-typ" checked={!!p.isContainer} onChange={() => onConvertToContainer ? onConvertToContainer() : upd({...p, isContainer: true})} style={{accentColor:'#6366f1'}}/>
                 <span style={{fontSize:'13px',fontWeight:p.isContainer?'600':'400'}}>🏢 Gebäude mit Einheiten</span>
               </label>
             </div>
@@ -7697,6 +7697,60 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
     setSaved(updated); save(updated);
   };
 
+  const onSplitToUnit = (containerId) => {
+    const c = saved.find(x => x.id === containerId);
+    if (!c) return;
+    const unitId = Date.now() + '_split_' + Math.random().toString(36).substr(2, 6);
+    const newUnit = { ...c, id: unitId, isContainer: false, parentId: containerId, saved: true };
+    const baseStamm = createEmpty().stammdaten;
+    const containerReset = {
+      ...c,
+      stammdaten: {
+        ...baseStamm,
+        name: c.stammdaten.name,
+        adresse: c.stammdaten.adresse,
+        projekt: c.stammdaten.projekt,
+        eigentuemer: c.stammdaten.eigentuemer,
+        eigentumsart: c.stammdaten.eigentumsart,
+        bundesland: c.stammdaten.bundesland,
+        typ: c.stammdaten.typ,
+      },
+      darlehen: [],
+      beteiligungen: [],
+    };
+    const updated = saved.map(x => x.id === containerId ? containerReset : x).concat(newUnit);
+    setSaved(updated); save(updated);
+    setCurr(containerReset);
+  };
+
+  const onConvertToContainer = () => {
+    if (!curr) return;
+    const sd = curr.stammdaten || {};
+    const hasOwnValues = (sd.kaufpreisImmobilie || 0) > 0 || (sd.kaltmiete || 0) > 0 || (sd.wohnflaeche || 0) > 0 || (curr.darlehen || []).length > 0;
+    if (!hasOwnValues) {
+      onUpd({ ...curr, isContainer: true });
+      return;
+    }
+    const containerId = curr.id;
+    const unitId = Date.now() + '_split_' + Math.random().toString(36).substr(2, 6);
+    const newUnit = { ...curr, id: unitId, isContainer: false, parentId: containerId, saved: true };
+    const baseStamm = createEmpty().stammdaten;
+    const containerShell = {
+      ...curr,
+      isContainer: true,
+      saved: true,
+      stammdaten: { ...baseStamm, name: sd.name, adresse: sd.adresse, projekt: sd.projekt, eigentuemer: sd.eigentuemer, eigentumsart: sd.eigentumsart, bundesland: sd.bundesland, typ: sd.typ },
+      darlehen: [],
+      beteiligungen: [],
+    };
+    const exists = saved.find(x => x.id === containerId);
+    let updated = exists ? saved.map(x => x.id === containerId ? containerShell : x) : [...saved, containerShell];
+    updated = [...updated, newUnit];
+    setSaved(updated); save(updated);
+    setCurr(containerShell);
+    showToast('success', 'Bestehende Wohnung wurde automatisch als Einheit angelegt.');
+  };
+
   const onSave = () => {
     if (!curr?.stammdaten?.name) return;
     const errors = validate(curr.stammdaten);
@@ -9136,7 +9190,7 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
           </div>
         ) : (
           <>
-            {tab === 'stamm' && <Stamm p={curr} upd={onUpd} c={c} onSave={onSave} saved={isSaved} onOpenImport={() => setImportModal(true)} onDelete={() => setDeleteConfirm(curr?.id)} onDiscard={() => { setCurr(null); setTab('dash'); }} validationErrors={validationErrors} beteiligte={beteiligte} immobilien={saved} onSmartImport={handleSmartImport} onAddEinheit={onAddEinheit} onSelectEinheit={onSelect} onAssignEinheit={onAssignEinheit} onDetachEinheit={onDetachEinheit} onDeleteUnit={onDel} onUpdateUnit={onUpdateUnit} />}
+            {tab === 'stamm' && <Stamm p={curr} upd={onUpd} c={c} onSave={onSave} saved={isSaved} onOpenImport={() => setImportModal(true)} onDelete={() => setDeleteConfirm(curr?.id)} onDiscard={() => { setCurr(null); setTab('dash'); }} validationErrors={validationErrors} beteiligte={beteiligte} immobilien={saved} onSmartImport={handleSmartImport} onAddEinheit={onAddEinheit} onSelectEinheit={onSelect} onAssignEinheit={onAssignEinheit} onDetachEinheit={onDetachEinheit} onDeleteUnit={onDel} onUpdateUnit={onUpdateUnit} onSplitToUnit={onSplitToUnit} onConvertToContainer={onConvertToContainer} />}
             {tab === 'rendite' && isSaved && <Rendite p={curr} upd={onUpd} c={c} />}
             {tab === 'steuer' && isSaved && <Steuer p={curr} upd={onUpd} c={c} />}
           </>
