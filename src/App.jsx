@@ -4360,6 +4360,10 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
   const [kpUnitOpen, setKpUnitOpen] = useState(null);
   const [mieteUnitOpen, setMieteUnitOpen] = useState(null);
   const [finUnitOpen, setFinUnitOpen] = useState(null);
+  const [afaUnitOpen, setAfaUnitOpen] = useState(null);
+  const [saUnitOpen, setSaUnitOpen] = useState(null);
+  const [betUnitOpen, setBetUnitOpen] = useState(null);
+  const [dokUnitOpen, setDokUnitOpen] = useState(null);
   const [resetConfirm, setResetConfirm] = useState(null); // 'objekt' | 'kaufpreis' | 'miete' | etc.
   const s = p.stammdaten;
   const einheiten = (immobilien || []).filter(x => x.parentId === p.id);
@@ -4767,6 +4771,55 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
           {(s.degressiveAfa > 0) && (
             <div className="res hl"><span>Gesamt-AfA p.a.</span><span>{fmt(c.afaGeb + (s.degressiveAfa || 0))}</span></div>
           )}
+          {p.isContainer && einheiten.length > 0 && (() => {
+            const unitAfa = (us) => {
+              const kp = (us.kaufpreisImmobilie || 0) + (us.mehrkosten || 0) + (us.kaufpreisStellplatz || 0);
+              const nk = (us.maklerProvision || 0) + (us.grunderwerbsteuer || 0) + (us.notarkosten || 0);
+              const gwg = (us.grundstueckGroesse || 0) * (us.bodenrichtwert || 0);
+              const ga = us.erbbaurecht ? 0 : (us.eigentumsart === 'gesamt' ? gwg : (us.teileigentumsanteil > 0 ? (us.teileigentumsanteil / 10000) * gwg : 0));
+              return ((kp + nk) - ga) * ((us.afaSatz || 3) / 100) + (us.degressiveAfa || 0);
+            };
+            const sumFlaeche = einheiten.reduce((a, u) => a + ((u.stammdaten || {}).grundstueckGroesse || 0), 0);
+            const sumAfa = einheiten.reduce((a, u) => a + unitAfa(u.stammdaten || {}), 0);
+            const gebAfa = c.afaGeb + (s.degressiveAfa || 0);
+            return (
+              <div style={{marginTop:'16px',paddingTop:'12px',borderTop:'1px solid var(--border)'}}>
+                <div style={{padding:'12px',marginBottom:'10px',border:'1px solid #f59e0b',borderRadius:'8px',background:'rgba(245,158,11,0.06)'}}>
+                  <div style={{fontSize:'13px',fontWeight:'600',marginBottom:'8px'}}>📊 AfA gesamt</div>
+                  <div style={{display:'flex',flexDirection:'column',gap:'4px',fontSize:'12px'}}>
+                    <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>AfA/Jahr Einheiten</span><b>{fmt(sumAfa)}</b></div>
+                    <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>AfA/Jahr Gebäude (gemeinsam)</span><b>{fmt(gebAfa)}</b></div>
+                    <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>AfA/Jahr gesamt</span><b>{fmt(gebAfa + sumAfa)}</b></div>
+                    <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>Grundstücksfläche Einheiten</span><b>{Number(sumFlaeche).toLocaleString('de-DE', { maximumFractionDigits: 2 })} qm</b></div>
+                  </div>
+                </div>
+                <div style={{fontSize:'12px',fontWeight:'600',marginBottom:'8px'}}>🏠 Grundstück & AfA je Einheit ({einheiten.length})</div>
+                <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
+                  {einheiten.map(u => {
+                    const us = u.stammdaten || {};
+                    const open = afaUnitOpen === u.id;
+                    return (
+                      <div key={u.id} style={{border:'1px solid var(--border)',borderRadius:'8px',overflow:'hidden'}}>
+                        <div onClick={() => setAfaUnitOpen(open ? null : u.id)} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 12px',cursor:'pointer',background:'rgba(255,255,255,0.02)'}}>
+                          <span style={{fontSize:'13px',fontWeight:'500'}}>{us.name || 'Einheit'}{us.wohnungsNr ? ` · Nr. ${us.wohnungsNr}` : ''}</span>
+                          <span style={{display:'flex',alignItems:'center',gap:'10px'}}><b style={{fontSize:'13px'}}>{fmt(unitAfa(us))}/J.</b><span style={{color:'var(--text-muted)'}}>{open ? '▾' : '▸'}</span></span>
+                        </div>
+                        {open && (
+                          <div style={{padding:'10px 12px',borderTop:'1px solid var(--border)'}}>
+                            <Input label="Grundstücksgröße" value={us.grundstueckGroesse} onChange={v => onUpdateUnit && onUpdateUnit(u.id, { grundstueckGroesse: v })} suffix="qm" />
+                            <Input label="Bodenrichtwert" value={us.bodenrichtwert} onChange={v => onUpdateUnit && onUpdateUnit(u.id, { bodenrichtwert: v })} suffix="€/qm" />
+                            <Input label="AfA-Satz (linear)" value={us.afaSatz} onChange={v => onUpdateUnit && onUpdateUnit(u.id, { afaSatz: v })} suffix="%" step={0.5} />
+                            <div className="res hl"><span>Lineare AfA p.a.</span><span>{fmt(unitAfa(us))}</span></div>
+                            <div style={{marginTop:'8px'}}><button onClick={() => onSelectEinheit && onSelectEinheit(u)} style={{padding:'5px 10px',background:'transparent',color:'#f59e0b',border:'1px solid #f59e0b',borderRadius:'6px',fontSize:'11px',cursor:'pointer'}}>Komplette Einheit öffnen →</button></div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
           <hr />
           <button className="btn-reset-section" onClick={() => setResetConfirm('afa')}>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -4786,6 +4839,49 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
           ))}
           <button className="btn-add" onClick={addSA}>+ Hinzufügen</button>
           {c.saSumme > 0 && <div className="res hl"><span>AfA SA p.a.</span><span>{fmt(c.afaSA)}</span></div>}
+          {p.isContainer && einheiten.length > 0 && (() => {
+            const usSum = (us) => (us.sonderausstattung || []).reduce((a, x) => a + (x.betrag || 0), 0);
+            const totalSum = einheiten.reduce((a, u) => a + usSum(u.stammdaten || {}), 0);
+            const totalCount = einheiten.reduce((a, u) => a + ((u.stammdaten?.sonderausstattung || []).length), 0);
+            return (
+              <div style={{marginTop:'16px',paddingTop:'12px',borderTop:'1px solid var(--border)'}}>
+                <div style={{padding:'12px',marginBottom:'10px',border:'1px solid #8b5cf6',borderRadius:'8px',background:'rgba(139,92,246,0.06)'}}>
+                  <div style={{fontSize:'13px',fontWeight:'600',marginBottom:'8px'}}>📊 Sonderausstattung der Einheiten gesamt</div>
+                  <div style={{display:'flex',flexDirection:'column',gap:'4px',fontSize:'12px'}}>
+                    <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>Positionen</span><b>{totalCount}</b></div>
+                    <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>Wert gesamt</span><b>{fmt(totalSum)}</b></div>
+                    <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>AfA SA p.a. (10%)</span><b>{fmt(totalSum * 0.1)}</b></div>
+                  </div>
+                </div>
+                <div style={{fontSize:'12px',fontWeight:'600',marginBottom:'8px'}}>🏠 Sonderausstattung je Einheit ({einheiten.length})</div>
+                <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
+                  {einheiten.map(u => {
+                    const us = u.stammdaten || {};
+                    const list = us.sonderausstattung || [];
+                    const open = saUnitOpen === u.id;
+                    return (
+                      <div key={u.id} style={{border:'1px solid var(--border)',borderRadius:'8px',overflow:'hidden'}}>
+                        <div onClick={() => setSaUnitOpen(open ? null : u.id)} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 12px',cursor:'pointer',background:'rgba(255,255,255,0.02)'}}>
+                          <span style={{fontSize:'13px',fontWeight:'500'}}>{us.name || 'Einheit'}{us.wohnungsNr ? ` · Nr. ${us.wohnungsNr}` : ''} · {list.length} Pos.</span>
+                          <span style={{display:'flex',alignItems:'center',gap:'10px'}}><b style={{fontSize:'13px'}}>{fmt(usSum(us))}</b><span style={{color:'var(--text-muted)'}}>{open ? '▾' : '▸'}</span></span>
+                        </div>
+                        {open && (
+                          <div style={{padding:'10px 12px',borderTop:'1px solid var(--border)',fontSize:'12px'}}>
+                            {list.length === 0 ? (
+                              <div style={{color:'var(--text-muted)'}}>Keine Sonderausstattung erfasst.</div>
+                            ) : list.map((x, xi) => (
+                              <div key={xi} style={{display:'flex',justifyContent:'space-between',padding:'2px 0'}}><span style={{color:'var(--text-muted)'}}>{x.bezeichnung || 'Position'}</span><span>{fmt(x.betrag || 0)}</span></div>
+                            ))}
+                            <div style={{marginTop:'6px'}}><button onClick={() => onSelectEinheit && onSelectEinheit(u)} style={{padding:'4px 9px',background:'transparent',color:'#8b5cf6',border:'1px solid #8b5cf6',borderRadius:'6px',fontSize:'11px',cursor:'pointer'}}>Sonderausstattung dieser Einheit bearbeiten →</button></div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
           <hr />
           <button className="btn-reset-section" onClick={() => setResetConfirm('sonderausstattung')}>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -5601,6 +5697,40 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
               }
               return null;
             })()}
+            {p.isContainer && einheiten.length > 0 && (
+              <div style={{marginTop:'16px',paddingTop:'12px',borderTop:'1px solid var(--border)'}}>
+                <div style={{padding:'8px 12px',marginBottom:'10px',background:'rgba(139,92,246,0.08)',borderRadius:'6px',fontSize:'11px',color:'var(--text-muted)'}}>
+                  ℹ️ Oben am Gebäude erfasste Beteiligte gelten <b>gemeinsam fürs ganze Gebäude</b>. Ist die Beteiligung <b>je Einheit</b> unterschiedlich (Regelfall), pflegst du sie in der jeweiligen Wohnung.
+                </div>
+                <div style={{fontSize:'12px',fontWeight:'600',marginBottom:'8px'}}>🏠 Beteiligte je Einheit ({einheiten.length})</div>
+                <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
+                  {einheiten.map(u => {
+                    const us = u.stammdaten || {};
+                    const ub = u.beteiligungen || [];
+                    const open = betUnitOpen === u.id;
+                    return (
+                      <div key={u.id} style={{border:'1px solid var(--border)',borderRadius:'8px',overflow:'hidden'}}>
+                        <div onClick={() => setBetUnitOpen(open ? null : u.id)} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 12px',cursor:'pointer',background:'rgba(255,255,255,0.02)'}}>
+                          <span style={{fontSize:'13px',fontWeight:'500'}}>{us.name || 'Einheit'}{us.wohnungsNr ? ` · Nr. ${us.wohnungsNr}` : ''}</span>
+                          <span style={{display:'flex',alignItems:'center',gap:'10px'}}><span style={{fontSize:'12px',color:'var(--text-muted)'}}>{ub.length} Beteiligte</span><span style={{color:'var(--text-muted)'}}>{open ? '▾' : '▸'}</span></span>
+                        </div>
+                        {open && (
+                          <div style={{padding:'10px 12px',borderTop:'1px solid var(--border)',fontSize:'12px'}}>
+                            {ub.length === 0 ? (
+                              <div style={{color:'var(--text-muted)'}}>Keine Beteiligten erfasst.</div>
+                            ) : ub.map((bt, bi) => {
+                              const person = (beteiligte || []).find(x => x.id === bt.beteiligterID);
+                              return <div key={bi} style={{display:'flex',justifyContent:'space-between',padding:'2px 0'}}><span style={{color:'var(--text-muted)'}}>{person?.name || 'Beteiligter'}</span><span>{bt.anteil || 0}%</span></div>;
+                            })}
+                            <div style={{marginTop:'6px'}}><button onClick={() => onSelectEinheit && onSelectEinheit(u)} style={{padding:'4px 9px',background:'transparent',color:'#8b5cf6',border:'1px solid #8b5cf6',borderRadius:'6px',fontSize:'11px',cursor:'pointer'}}>Beteiligte dieser Einheit bearbeiten →</button></div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </Acc>
         )}
       </div>
@@ -5764,6 +5894,36 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
             ))}
           </div>
           <button className="btn-add" onClick={() => upd({ ...p, dokumente: [...(p.dokumente || []), { name: '', url: '', typ: 'sonstige' }] })}>+ Link hinzufügen</button>
+          {p.isContainer && einheiten.length > 0 && (
+            <div style={{marginTop:'16px',paddingTop:'12px',borderTop:'1px solid var(--border)'}}>
+              <div style={{fontSize:'12px',fontWeight:'600',marginBottom:'8px'}}>🏠 Dokumente je Einheit ({einheiten.length})</div>
+              <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
+                {einheiten.map(u => {
+                  const us = u.stammdaten || {};
+                  const ud = u.dokumente || [];
+                  const open = dokUnitOpen === u.id;
+                  return (
+                    <div key={u.id} style={{border:'1px solid var(--border)',borderRadius:'8px',overflow:'hidden'}}>
+                      <div onClick={() => setDokUnitOpen(open ? null : u.id)} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 12px',cursor:'pointer',background:'rgba(255,255,255,0.02)'}}>
+                        <span style={{fontSize:'13px',fontWeight:'500'}}>{us.name || 'Einheit'}{us.wohnungsNr ? ` · Nr. ${us.wohnungsNr}` : ''}</span>
+                        <span style={{display:'flex',alignItems:'center',gap:'10px'}}><span style={{fontSize:'12px',color:'var(--text-muted)'}}>{ud.length} Dokument{ud.length !== 1 ? 'e' : ''}</span><span style={{color:'var(--text-muted)'}}>{open ? '▾' : '▸'}</span></span>
+                      </div>
+                      {open && (
+                        <div style={{padding:'10px 12px',borderTop:'1px solid var(--border)',fontSize:'12px'}}>
+                          {ud.length === 0 ? (
+                            <div style={{color:'var(--text-muted)'}}>Keine Dokumente erfasst.</div>
+                          ) : ud.map((doc, di) => (
+                            <div key={di} style={{padding:'2px 0',color:'var(--text-muted)'}}>{doc.name || doc.url || 'Dokument'}</div>
+                          ))}
+                          <div style={{marginTop:'6px'}}><button onClick={() => onSelectEinheit && onSelectEinheit(u)} style={{padding:'4px 9px',background:'transparent',color:'#f97316',border:'1px solid #f97316',borderRadius:'6px',fontSize:'11px',cursor:'pointer'}}>Dokumente dieser Einheit verwalten →</button></div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </Acc>
         
         {/* Nebenkostenabrechnungen */}
