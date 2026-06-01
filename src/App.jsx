@@ -4346,6 +4346,28 @@ const exportPortfolio = (filtered, totals, avgRendite) => {
 };
 
 // Stammdaten
+// Aggregation: Werte eines Gebäudes automatisch aus seinen Einheiten
+const cmUnit = (immo) => {
+  const s = (immo && immo.stammdaten) || {}; const darlehen = (immo && immo.darlehen) || [];
+  const kp = (s.kaufpreisImmobilie||0)+(s.mehrkosten||0)+(s.kaufpreisStellplatz||0);
+  const nk = (s.maklerProvision||0)+(s.grunderwerbsteuer||0)+(s.notarkosten||0);
+  const jm = ((s.kaltmiete||0)+(s.mieteStellplatz||0)+(s.mieteSonderausstattung||0))*12;
+  const gwg = (s.grundstueckGroesse||0)*(s.bodenrichtwert||0);
+  const ga = s.erbbaurecht ? 0 : (s.eigentumsart==='gesamt' ? gwg : (s.teileigentumsanteil>0 ? (s.teileigentumsanteil/10000)*gwg : 0));
+  const afaGeb = ((kp+nk)-ga)*((s.afaSatz||3)/100);
+  const saSumme = (s.sonderausstattung||[]).reduce((a,i)=>a+(i.betrag||0),0);
+  const afaGes = afaGeb + saSumme*0.1 + (s.degressiveAfa||0);
+  const fk = darlehen.reduce((a,d)=>a+(d.restschuld||d.betrag||0),0);
+  const rate = darlehen.reduce((a,d)=>a+(d.monatsrate>0?d.monatsrate:(d.betrag>0&&d.zinssatz>0?d.betrag*((d.zinssatz+(d.tilgung||0))/100)/12:0)),0);
+  return {kp,nk,jm,wohnflaeche:(s.wohnflaeche||0),afaGes,fk,rate,saSumme,saCount:(s.sonderausstattung||[]).length};
+};
+const cmAgg = (container, children) => {
+  const own = cmUnit(container);
+  const acc = children.reduce((a,u)=>{const m=cmUnit(u);a.kp+=m.kp;a.nk+=m.nk;a.jm+=m.jm;a.wohnflaeche+=m.wohnflaeche;a.afaGes+=m.afaGes;a.fk+=m.fk;a.rate+=m.rate;a.saSumme+=m.saSumme;a.saCount+=m.saCount;return a;},{kp:0,nk:0,jm:0,wohnflaeche:0,afaGes:0,fk:0,rate:0,saSumme:0,saCount:0});
+  const kp = own.kp+acc.kp, nk = own.nk+acc.nk, ak = kp+nk, jm = acc.jm;
+  return {kp,nk,ak,jm,mm:jm/12,rendite:kp>0?jm/kp:0,kaufpreisfaktor:jm>0?kp/jm:0,afaGeb:0,afaGes:own.afaGes+acc.afaGes,wohnflaeche:own.wohnflaeche+acc.wohnflaeche,fk:own.fk+acc.fk,rate:own.rate+acc.rate,saSumme:own.saSumme+acc.saSumme,saCount:own.saCount+acc.saCount};
+};
+
 const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, validationErrors = {}, beteiligte = [], immobilien = [], onSmartImport, onAddEinheit, onSelectEinheit, onAssignEinheit, onDetachEinheit, onDeleteUnit, onUpdateUnit, onSplitToUnit, onConvertToContainer }) => {
   const [sec, setSec] = useState(null);
   const [secExpanded, setSecExpanded] = useState(false);
@@ -4369,6 +4391,8 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
   const einheiten = (immobilien || []).filter(x => x.parentId === p.id);
   const parentGebaeude = p.parentId ? (immobilien || []).find(x => x.id === p.parentId) : null;
   const zuordenbar = (immobilien || []).filter(x => !x.isContainer && !x.parentId && x.id !== p.id && x.saved);
+  const isCont = p.isContainer && einheiten.length > 0;
+  const cc = isCont ? cmAgg(p, einheiten) : c;
   const zuPruefen = p.zuPruefen || [];
   const istImportiert = p.importiert && zuPruefen.length > 0;
   
@@ -4483,13 +4507,13 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
         </div>
       )}
       <div className="kpi-bar">
-        <div className="kpi"><span>Kaufpreis</span><b>{fmt(c.kp)}</b></div>
-        <div className="kpi"><span>+ Nebenkosten</span><b>{fmt(c.nk)}</b></div>
-        <div className="kpi"><span>= Anschaffung</span><b className="acc">{fmt(c.ak)}</b></div>
-        <div className="kpi"><span>Jahres-Kaltmiete</span><b className="pos">{fmt(c.jm)}</b></div>
-        <div className="kpi"><span>Rendite</span><b className="acc">{fmtP(c.rendite)}</b></div>
-        <div className="kpi"><span>Faktor</span><b>{c.kaufpreisfaktor ? c.kaufpreisfaktor.toFixed(1) : '–'}</b></div>
-        <div className="kpi"><span>AfA p.a.</span><b>{fmt(c.afaGes)}</b></div>
+        <div className="kpi"><span>Kaufpreis</span><b>{fmt(cc.kp)}</b></div>
+        <div className="kpi"><span>+ Nebenkosten</span><b>{fmt(cc.nk)}</b></div>
+        <div className="kpi"><span>= Anschaffung</span><b className="acc">{fmt(cc.ak)}</b></div>
+        <div className="kpi"><span>Jahres-Kaltmiete</span><b className="pos">{fmt(cc.jm)}</b></div>
+        <div className="kpi"><span>Rendite</span><b className="acc">{fmtP(cc.rendite)}</b></div>
+        <div className="kpi"><span>Faktor</span><b>{cc.kaufpreisfaktor ? cc.kaufpreisfaktor.toFixed(1) : '–'}</b></div>
+        <div className="kpi"><span>AfA p.a.</span><b>{fmt(cc.afaGes)}</b></div>
       </div>
       <div className="accs">
         <Acc icon={<IconObjekt color="#6366f1" />} title="Objekt" sum={(p.isContainer ? '🏢 Gebäude · ' : '') + (s.name || 'Name eingeben...')} open={sec === 'obj'} toggle={() => setSec(sec === 'obj' ? null : 'obj')} color="#6366f1" onImport={onOpenImport}>
@@ -4651,38 +4675,7 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
               )}
           </Acc>
         )}
-        <Acc icon={<IconKaufpreis color="#10b981" />} title="Kaufpreis und Verkehrswert" sum={`${fmt(c.kp)} + ${fmt(c.nk)} NK`} open={sec === 'kp'} toggle={() => setSec(sec === 'kp' ? null : 'kp')} color="#10b981">
-          {p.isContainer && einheiten.length > 0 && (() => {
-            const sum = einheiten.reduce((a, u) => {
-              const us = u.stammdaten || {};
-              a.kaufpreisImmobilie += us.kaufpreisImmobilie || 0;
-              a.mehrkosten += us.mehrkosten || 0;
-              a.kaufpreisStellplatz += us.kaufpreisStellplatz || 0;
-              a.verkehrswert += us.verkehrswert || 0;
-              return a;
-            }, { kaufpreisImmobilie: 0, mehrkosten: 0, kaufpreisStellplatz: 0, verkehrswert: 0 });
-            const hatWerte = sum.kaufpreisImmobilie > 0 || sum.kaufpreisStellplatz > 0 || sum.verkehrswert > 0;
-            if (!hatWerte) return null;
-            const eq = (a, b) => Math.abs((a || 0) - (b || 0)) < 0.01;
-            const matchesAll = eq(s.kaufpreisImmobilie, sum.kaufpreisImmobilie) && eq(s.mehrkosten, sum.mehrkosten) && eq(s.kaufpreisStellplatz, sum.kaufpreisStellplatz) && eq(s.verkehrswert, sum.verkehrswert);
-            return (
-              <div style={{padding:'12px',marginBottom:'14px',border:'1px solid #10b981',borderRadius:'8px',background:'rgba(16,185,129,0.06)'}}>
-                <div style={{fontSize:'13px',fontWeight:'600',marginBottom:'8px'}}>📊 Summe aus {einheiten.length} Einheiten</div>
-                <div style={{display:'flex',flexDirection:'column',gap:'4px',fontSize:'12px',marginBottom:'10px'}}>
-                  <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>Kaufpreis Immobilie</span><b>{fmt(sum.kaufpreisImmobilie)}</b></div>
-                  {sum.mehrkosten > 0 && <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>Mehrkosten</span><b>{fmt(sum.mehrkosten)}</b></div>}
-                  {sum.kaufpreisStellplatz > 0 && <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>Stellplatz</span><b>{fmt(sum.kaufpreisStellplatz)}</b></div>}
-                  {sum.verkehrswert > 0 && <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>Verkehrswert</span><b>{fmt(sum.verkehrswert)}</b></div>}
-                </div>
-                {matchesAll ? (
-                  <div style={{fontSize:'11px',color:'#22c55e'}}>✓ Gebäudewerte entsprechen der Summe der Einheiten.</div>
-                ) : (
-                  <button onClick={() => upd({ ...p, stammdaten: { ...s, kaufpreisImmobilie: sum.kaufpreisImmobilie, mehrkosten: sum.mehrkosten, kaufpreisStellplatz: sum.kaufpreisStellplatz, verkehrswert: sum.verkehrswert } })} style={{padding:'7px 12px',background:'#10b981',color:'#fff',border:'none',borderRadius:'6px',fontSize:'12px',cursor:'pointer'}}>In Gebäude übernehmen</button>
-                )}
-                <p style={{fontSize:'11px',color:'var(--text-muted)',margin:'8px 2px 0'}}>Summiert die Kaufpreise/Werte der Einheiten als Gebäudesumme. Die Einzelwerte bleiben pro Einheit erhalten; in der Portfolio-Übersicht zählt nur das Gebäude (keine Doppelzählung).</p>
-              </div>
-            );
-          })()}
+        <Acc icon={<IconKaufpreis color="#10b981" />} title="Kaufpreis und Verkehrswert" sum={`${fmt(cc.kp)} + ${fmt(cc.nk)} NK`} open={sec === 'kp'} toggle={() => setSec(sec === 'kp' ? null : 'kp')} color="#10b981">
           <Input label="Kaufpreis Immobilie" value={s.kaufpreisImmobilie} onChange={v => set('kaufpreisImmobilie', v)} suffix="€" step={1000} error={validationErrors.kaufpreisImmobilie} />
           <Input label="Mehrkosten" value={s.mehrkosten} onChange={v => set('mehrkosten', v)} suffix="€" />
           <Input label="Kaufpreis Stellplatz" value={s.kaufpreisStellplatz} onChange={v => set('kaufpreisStellplatz', v)} suffix="€" error={validationErrors.kaufpreisStellplatz} />
@@ -4736,7 +4729,7 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
             Felder zurücksetzen
           </button>
         </Acc>
-        <Acc icon={<IconAfa color="#f59e0b" />} title="Grundstück & AfA" sum={`AfA: ${fmt(c.afaGeb + (s.degressiveAfa || 0))}/Jahr`} open={sec === 'afa'} toggle={() => setSec(sec === 'afa' ? null : 'afa')} color="#f59e0b">
+        <Acc icon={<IconAfa color="#f59e0b" />} title="Grundstück & AfA" sum={`AfA: ${fmt(isCont ? cc.afaGes : (c.afaGeb + (s.degressiveAfa || 0)))}/Jahr`} open={sec === 'afa'} toggle={() => setSec(sec === 'afa' ? null : 'afa')} color="#f59e0b">
           {/* === Eigentum am Grundstück / Erbbaurecht (v7.7) === */}
           <div className="field-group-label">Eigentum am Grundstück</div>
           <div className="mietstatus-checkboxes">
@@ -4828,7 +4821,7 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
             Felder zurücksetzen
           </button>
         </Acc>
-        <Acc icon={<IconSonder color="#8b5cf6" />} title="Sonderausstattung" sum={s.sonderausstattung.length > 0 ? `${s.sonderausstattung.length}x, ${fmt(c.saSumme)}` : 'Keine'} open={sec === 'sa'} toggle={() => setSec(sec === 'sa' ? null : 'sa')} color="#8b5cf6">
+        <Acc icon={<IconSonder color="#8b5cf6" />} title="Sonderausstattung" sum={(isCont ? cc.saCount : s.sonderausstattung.length) > 0 ? `${isCont ? cc.saCount : s.sonderausstattung.length}x, ${fmt(isCont ? cc.saSumme : c.saSumme)}` : 'Keine'} open={sec === 'sa'} toggle={() => setSec(sec === 'sa' ? null : 'sa')} color="#8b5cf6">
           <p className="hint">z.B. Küche – 10% AfA über 10 Jahre</p>
           {s.sonderausstattung.map((x, i) => (
             <div key={i} className="sa-row">
@@ -4893,44 +4886,13 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
         <Acc 
           icon={<IconMiete color={s.nutzung === 'eigengenutzt' ? 'var(--text-dim)' : '#ec4899'} />} 
           title="Miete" 
-          sum={s.nutzung === 'eigengenutzt' ? 'Eigengenutzt' : `${fmt(c.mm)}/Monat`} 
+          sum={s.nutzung === 'eigengenutzt' ? 'Eigengenutzt' : `${fmt(cc.mm)}/Monat`} 
           open={sec === 'miete' && s.nutzung !== 'eigengenutzt'} 
           toggle={() => s.nutzung !== 'eigengenutzt' && setSec(sec === 'miete' ? null : 'miete')} 
           color={s.nutzung === 'eigengenutzt' ? 'var(--text-dim)' : '#ec4899'}
           disabled={s.nutzung === 'eigengenutzt'}
           onImport={onOpenImport}
         >
-          {p.isContainer && einheiten.length > 0 && (() => {
-            const sum = einheiten.reduce((a, u) => {
-              const us = u.stammdaten || {};
-              a.kaltmiete += us.kaltmiete || 0;
-              a.nebenkostenVorauszahlung += us.nebenkostenVorauszahlung || 0;
-              a.mieteStellplatz += us.mieteStellplatz || 0;
-              a.mieteSonderausstattung += us.mieteSonderausstattung || 0;
-              a.wohnflaeche += us.wohnflaeche || 0;
-              return a;
-            }, { kaltmiete: 0, nebenkostenVorauszahlung: 0, mieteStellplatz: 0, mieteSonderausstattung: 0, wohnflaeche: 0 });
-            const eq = (a, b) => Math.abs((a || 0) - (b || 0)) < 0.01;
-            const matchesAll = eq(s.kaltmiete, sum.kaltmiete) && eq(s.nebenkostenVorauszahlung, sum.nebenkostenVorauszahlung) && eq(s.mieteStellplatz, sum.mieteStellplatz) && eq(s.mieteSonderausstattung, sum.mieteSonderausstattung) && eq(s.wohnflaeche, sum.wohnflaeche);
-            return (
-              <div style={{padding:'12px',marginBottom:'14px',border:'1px solid #6366f1',borderRadius:'8px',background:'rgba(99,102,241,0.06)'}}>
-                <div style={{fontSize:'13px',fontWeight:'600',marginBottom:'8px'}}>📊 Summe aus {einheiten.length} Einheiten</div>
-                <div style={{display:'flex',flexDirection:'column',gap:'4px',fontSize:'12px',marginBottom:'10px'}}>
-                  <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>Kaltmiete</span><b>{fmt(sum.kaltmiete)}/Mon.</b></div>
-                  <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>NK-Vorauszahlung</span><b>{fmt(sum.nebenkostenVorauszahlung)}/Mon.</b></div>
-                  {sum.mieteStellplatz > 0 && <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>Stellplatz</span><b>{fmt(sum.mieteStellplatz)}/Mon.</b></div>}
-                  {sum.mieteSonderausstattung > 0 && <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>Sonderausstattung</span><b>{fmt(sum.mieteSonderausstattung)}/Mon.</b></div>}
-                  <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>Wohnfläche</span><b>{sum.wohnflaeche.toFixed(2)} m²</b></div>
-                </div>
-                {matchesAll ? (
-                  <div style={{fontSize:'11px',color:'#22c55e'}}>✓ Gebäudewerte entsprechen aktuell der Summe der Einheiten.</div>
-                ) : (
-                  <button onClick={() => upd({ ...p, stammdaten: { ...s, kaltmiete: sum.kaltmiete, nebenkostenVorauszahlung: sum.nebenkostenVorauszahlung, mieteStellplatz: sum.mieteStellplatz, mieteSonderausstattung: sum.mieteSonderausstattung, wohnflaeche: sum.wohnflaeche } })} style={{padding:'7px 12px',background:'#6366f1',color:'#fff',border:'none',borderRadius:'6px',fontSize:'12px',cursor:'pointer'}}>In Gebäude übernehmen</button>
-                )}
-                <p style={{fontSize:'11px',color:'var(--text-muted)',margin:'8px 2px 0'}}>Übernimmt Kaltmiete, NK, Stellplatz, Sonderausstattung und Wohnfläche als Gebäudesumme. Diese Werte fließen in Rendite & Steuer ein und bleiben danach manuell änderbar.</p>
-              </div>
-            );
-          })()}
           {p.isContainer && einheiten.length > 0 && (
             <div style={{marginBottom:'14px'}}>
               <div style={{fontSize:'12px',fontWeight:'600',marginBottom:'8px'}}>🏠 Miete je Einheit ({einheiten.length})</div>
@@ -5290,7 +5252,7 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
           </button>
         </Acc>
         <Acc icon={<IconFinanz color="#3b82f6" />} title="Finanzierung" sum={(() => {
-          const darlehen = p.darlehen || [];
+          const darlehen = [...(p.darlehen || []), ...(p.isContainer ? (immobilien || []).filter(x => x.parentId === p.id).flatMap(u => u.darlehen || []) : [])];
           const foerderungen = (s.kfwZuschuss || 0) + (s.bafaFoerderung || 0) + (s.landesFoerderung || 0) + (s.wohnRiester || 0);
           if (darlehen.length === 0 && foerderungen === 0) return `${s.eigenkapitalAnteil}% EK`;
           const summeFK = darlehen.reduce((a, d) => a + (d.betrag || 0), 0);
@@ -6882,23 +6844,25 @@ const Dashboard = ({ immobilien, onSelectImmo, aktiveBeteiligte = [], beteiligte
     // Monatliche Darlehensrate berechnen
     const darlehensRate = _allLoans.reduce((sum, d) => sum + (d.monatsrate > 0 ? d.monatsrate : (d.betrag > 0 && d.zinssatz > 0 ? d.betrag * ((d.zinssatz + (d.tilgung || 0)) / 100) / 12 : 0)), 0);
     
+    const _kids = immo.isContainer ? immobilien.filter(x => x.parentId === immo.id) : [];
+    const agg = _kids.length > 0 ? cmAgg(immo, _kids) : null;
     return { 
       ...immo, 
-      kp: kp * faktor, 
-      nk: nk * faktor, 
-      ak: ak * faktor, 
-      jm: jm * faktor, 
-      mm: (jm / 12) * faktor, 
-      rendite, // Rendite bleibt prozentual gleich
+      kp: (agg ? agg.kp : kp) * faktor, 
+      nk: (agg ? agg.nk : nk) * faktor, 
+      ak: (agg ? agg.ak : ak) * faktor, 
+      jm: (agg ? agg.jm : jm) * faktor, 
+      mm: ((agg ? agg.jm : jm) / 12) * faktor, 
+      rendite: agg ? agg.rendite : rendite, 
       ek: ek * faktor, 
-      fk: fk * faktor, 
+      fk: (agg ? agg.fk : fk) * faktor, 
       ann: ann * faktor, 
-      afaGes: afaGes * faktor, 
-      wohnflaeche: (s.wohnflaeche || 0) * faktor, 
+      afaGes: (agg ? agg.afaGes : afaGes) * faktor, 
+      wohnflaeche: (agg ? agg.wohnflaeche : (s.wohnflaeche || 0)) * faktor, 
       progress,
       anteil,
       zinsbindungWarning,
-      darlehensRate
+      darlehensRate: agg ? agg.rate : darlehensRate
     };
   });
 
