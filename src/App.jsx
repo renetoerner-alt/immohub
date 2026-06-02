@@ -1258,11 +1258,11 @@ const Select = ({ label, value, onChange, options }) => (
   </div>
 );
 
-const Acc = ({ icon, title, sum, open, toggle, color = '#3b82f6', disabled = false, onImport, children }) => (
+const Acc = ({ icon, title, sum, badge, open, toggle, color = '#3b82f6', disabled = false, onImport, children }) => (
   <div className={`acc ${open ? 'open' : ''} ${disabled ? 'disabled' : ''}`} style={{ '--c': color }}>
     <div className="acc-h" onClick={disabled ? undefined : toggle}>
       <div className="acc-i">{icon}</div>
-      <div className="acc-info"><div className="acc-t">{title}</div><div className="acc-s">{sum}</div></div>
+      <div className="acc-info"><div className="acc-t">{title}{badge && <span style={{marginLeft:'8px',fontSize:'10px',fontWeight:600,padding:'2px 7px',borderRadius:'10px',background:'rgba(99,102,241,0.15)',color:'#818cf8',whiteSpace:'nowrap'}}>🏢 {badge}</span>}</div><div className="acc-s">{sum}</div></div>
       {onImport && open && (
         <button 
           className="acc-import-btn" 
@@ -4675,20 +4675,46 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
               )}
           </Acc>
         )}
-        <Acc icon={<IconKaufpreis color="#10b981" />} title="Kaufpreis und Verkehrswert" sum={`${fmt(cc.kp)} + ${fmt(cc.nk)} NK`} open={sec === 'kp'} toggle={() => setSec(sec === 'kp' ? null : 'kp')} color="#10b981">
-          <Input label="Kaufpreis Immobilie" value={s.kaufpreisImmobilie} onChange={v => set('kaufpreisImmobilie', v)} suffix="€" step={1000} error={validationErrors.kaufpreisImmobilie} />
-          <Input label="Mehrkosten" value={s.mehrkosten} onChange={v => set('mehrkosten', v)} suffix="€" />
-          <Input label="Kaufpreis Stellplatz" value={s.kaufpreisStellplatz} onChange={v => set('kaufpreisStellplatz', v)} suffix="€" error={validationErrors.kaufpreisStellplatz} />
-          <div className="res"><span>= Kaufpreis</span><span>{fmt(c.kp)}</span></div>
-          <hr />
-          <Input label="Makler" value={s.maklerProvision} onChange={v => set('maklerProvision', v)} suffix="€" />
-          <Input label="Grunderwerbsteuer" value={s.grunderwerbsteuer} onChange={v => set('grunderwerbsteuer', v)} suffix="€" />
-          <Input label="Notar" value={s.notarkosten} onChange={v => set('notarkosten', v)} suffix="€" />
-          <div className="res hl"><span>= Anschaffungskosten</span><span>{fmt(c.ak)}</span></div>
-          <hr />
-          <div className="field-group-label">Aktueller Verkehrswert</div>
-          <Input label="Verkehrswert" value={s.verkehrswert} onChange={v => set('verkehrswert', v)} suffix="€" error={validationErrors.verkehrswert} />
-          <Input label="Bewertungsdatum" value={s.verkehrswertDatum} onChange={v => set('verkehrswertDatum', v)} type="date" />
+        <Acc icon={<IconKaufpreis color="#10b981" />} title="Kaufpreis und Verkehrswert" badge={isCont ? 'Summe der Einheiten' : undefined} sum={`${fmt(cc.kp)} + ${fmt(cc.nk)} NK`} open={sec === 'kp'} toggle={() => setSec(sec === 'kp' ? null : 'kp')} color="#10b981">
+          {isCont ? (() => {
+            const f = einheiten.reduce((a, u) => { const us = u.stammdaten || {}; a.kpi += us.kaufpreisImmobilie || 0; a.mk += us.mehrkosten || 0; a.sp += us.kaufpreisStellplatz || 0; a.mkl += us.maklerProvision || 0; a.gr += us.grunderwerbsteuer || 0; a.no += us.notarkosten || 0; a.vw += us.verkehrswert || 0; return a; }, { kpi:0, mk:0, sp:0, mkl:0, gr:0, no:0, vw:0 });
+            const dates = [...new Set(einheiten.map(u => u.stammdaten?.verkehrswertDatum).filter(Boolean))];
+            const commonDate = dates.length === 1 ? dates[0] : '';
+            return (
+              <>
+                <div className="res"><span>Kaufpreis Immobilie (Σ Einheiten)</span><span>{fmt(f.kpi)}</span></div>
+                {f.mk > 0 && <div className="res"><span>Mehrkosten</span><span>{fmt(f.mk)}</span></div>}
+                {f.sp > 0 && <div className="res"><span>Kaufpreis Stellplatz</span><span>{fmt(f.sp)}</span></div>}
+                <div className="res hl"><span>= Kaufpreis</span><span>{fmt(cc.kp)}</span></div>
+                <hr />
+                {f.mkl > 0 && <div className="res"><span>Makler</span><span>{fmt(f.mkl)}</span></div>}
+                {f.gr > 0 && <div className="res"><span>Grunderwerbsteuer</span><span>{fmt(f.gr)}</span></div>}
+                {f.no > 0 && <div className="res"><span>Notar</span><span>{fmt(f.no)}</span></div>}
+                <div className="res hl"><span>= Anschaffungskosten</span><span>{fmt(cc.ak)}</span></div>
+                <hr />
+                <div className="field-group-label">Aktueller Verkehrswert</div>
+                <div className="res"><span>Verkehrswert (Σ Einheiten)</span><span>{fmt(f.vw)}</span></div>
+                {commonDate ? <div className="res"><span>Bewertungsdatum</span><span>{commonDate}</span></div> : (dates.length > 1 && <div className="res"><span>Bewertungsdatum</span><span style={{color:'var(--text-muted)'}}>unterschiedlich</span></div>)}
+                <p style={{fontSize:'11px',color:'var(--text-muted)',marginTop:'6px'}}>Automatisch aus den Einheiten summiert. Einzelwerte bearbeitest du unten je Einheit.</p>
+              </>
+            );
+          })() : (
+            <>
+              <Input label="Kaufpreis Immobilie" value={s.kaufpreisImmobilie} onChange={v => set('kaufpreisImmobilie', v)} suffix="€" step={1000} error={validationErrors.kaufpreisImmobilie} />
+              <Input label="Mehrkosten" value={s.mehrkosten} onChange={v => set('mehrkosten', v)} suffix="€" />
+              <Input label="Kaufpreis Stellplatz" value={s.kaufpreisStellplatz} onChange={v => set('kaufpreisStellplatz', v)} suffix="€" error={validationErrors.kaufpreisStellplatz} />
+              <div className="res"><span>= Kaufpreis</span><span>{fmt(c.kp)}</span></div>
+              <hr />
+              <Input label="Makler" value={s.maklerProvision} onChange={v => set('maklerProvision', v)} suffix="€" />
+              <Input label="Grunderwerbsteuer" value={s.grunderwerbsteuer} onChange={v => set('grunderwerbsteuer', v)} suffix="€" />
+              <Input label="Notar" value={s.notarkosten} onChange={v => set('notarkosten', v)} suffix="€" />
+              <div className="res hl"><span>= Anschaffungskosten</span><span>{fmt(c.ak)}</span></div>
+              <hr />
+              <div className="field-group-label">Aktueller Verkehrswert</div>
+              <Input label="Verkehrswert" value={s.verkehrswert} onChange={v => set('verkehrswert', v)} suffix="€" error={validationErrors.verkehrswert} />
+              <Input label="Bewertungsdatum" value={s.verkehrswertDatum} onChange={v => set('verkehrswertDatum', v)} type="date" />
+            </>
+          )}
           {p.isContainer && einheiten.length > 0 && (
             <div style={{marginTop:'16px',paddingTop:'12px',borderTop:'1px solid var(--border)'}}>
               <div style={{fontSize:'12px',fontWeight:'600',marginBottom:'8px'}}>🏠 Kaufpreis je Einheit ({einheiten.length})</div>
@@ -4729,7 +4755,7 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
             Felder zurücksetzen
           </button>
         </Acc>
-        <Acc icon={<IconAfa color="#f59e0b" />} title="Grundstück & AfA" sum={`AfA: ${fmt(isCont ? cc.afaGes : (c.afaGeb + (s.degressiveAfa || 0)))}/Jahr`} open={sec === 'afa'} toggle={() => setSec(sec === 'afa' ? null : 'afa')} color="#f59e0b">
+        <Acc icon={<IconAfa color="#f59e0b" />} title="Grundstück & AfA" badge={isCont ? 'Summe der Einheiten' : undefined} sum={`AfA: ${fmt(isCont ? cc.afaGes : (c.afaGeb + (s.degressiveAfa || 0)))}/Jahr`} open={sec === 'afa'} toggle={() => setSec(sec === 'afa' ? null : 'afa')} color="#f59e0b">
           {/* === Eigentum am Grundstück / Erbbaurecht (v7.7) === */}
           <div className="field-group-label">Eigentum am Grundstück</div>
           <div className="mietstatus-checkboxes">
@@ -4821,7 +4847,7 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
             Felder zurücksetzen
           </button>
         </Acc>
-        <Acc icon={<IconSonder color="#8b5cf6" />} title="Sonderausstattung" sum={(isCont ? cc.saCount : s.sonderausstattung.length) > 0 ? `${isCont ? cc.saCount : s.sonderausstattung.length}x, ${fmt(isCont ? cc.saSumme : c.saSumme)}` : 'Keine'} open={sec === 'sa'} toggle={() => setSec(sec === 'sa' ? null : 'sa')} color="#8b5cf6">
+        <Acc icon={<IconSonder color="#8b5cf6" />} title="Sonderausstattung" badge={isCont ? 'Summe der Einheiten' : undefined} sum={(isCont ? cc.saCount : s.sonderausstattung.length) > 0 ? `${isCont ? cc.saCount : s.sonderausstattung.length}x, ${fmt(isCont ? cc.saSumme : c.saSumme)}` : 'Keine'} open={sec === 'sa'} toggle={() => setSec(sec === 'sa' ? null : 'sa')} color="#8b5cf6">
           <p className="hint">z.B. Küche – 10% AfA über 10 Jahre</p>
           {s.sonderausstattung.map((x, i) => (
             <div key={i} className="sa-row">
@@ -4886,6 +4912,7 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
         <Acc 
           icon={<IconMiete color={s.nutzung === 'eigengenutzt' ? 'var(--text-dim)' : '#ec4899'} />} 
           title="Miete" 
+          badge={isCont ? 'Summe der Einheiten' : undefined}
           sum={s.nutzung === 'eigengenutzt' ? 'Eigengenutzt' : `${fmt(cc.mm)}/Monat`} 
           open={sec === 'miete' && s.nutzung !== 'eigengenutzt'} 
           toggle={() => s.nutzung !== 'eigengenutzt' && setSec(sec === 'miete' ? null : 'miete')} 
@@ -5251,7 +5278,7 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
             Felder zurücksetzen
           </button>
         </Acc>
-        <Acc icon={<IconFinanz color="#3b82f6" />} title="Finanzierung" sum={(() => {
+        <Acc icon={<IconFinanz color="#3b82f6" />} title="Finanzierung" badge={isCont ? 'Summe der Einheiten' : undefined} sum={(() => {
           const darlehen = [...(p.darlehen || []), ...(p.isContainer ? (immobilien || []).filter(x => x.parentId === p.id).flatMap(u => u.darlehen || []) : [])];
           const foerderungen = (s.kfwZuschuss || 0) + (s.bafaFoerderung || 0) + (s.landesFoerderung || 0) + (s.wohnRiester || 0);
           if (darlehen.length === 0 && foerderungen === 0) return `${s.eigenkapitalAnteil}% EK`;
