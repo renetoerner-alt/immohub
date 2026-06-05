@@ -175,6 +175,38 @@ const fmtD = (v) => new Intl.NumberFormat('de-DE', { style: 'currency', currency
 const fmtP = (v) => new Intl.NumberFormat('de-DE', { style: 'percent', minimumFractionDigits: 2 }).format(v || 0);
 const fmtPlain = (v) => new Intl.NumberFormat('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v || 0);
 
+// Jahres-Zinsen mit unterjähriger Tilgungsverrechnung (annähernd echte Jahr-1-Zinsen)
+// modus: 'monatlich' (12), 'quartalsweise' (4), 'jaehrlich' (1)
+// Verwendet Monatsrate falls vorhanden, sonst Annuität aus zinssatz+tilgung.
+const computeYearlyInterest = (d) => {
+  if (!d || !d.betrag || !d.zinssatz) return 0;
+  const start = d.restschuld > 0 ? d.restschuld : d.betrag;
+  const annualRate = (d.zinssatz || 0) / 100;
+  const modus = d.tilgungsrhythmus || 'monatlich';
+  const periods = modus === 'jaehrlich' ? 1 : (modus === 'quartalsweise' ? 4 : 12);
+  if (periods === 1) return start * annualRate;
+  const pRate = annualRate / periods;
+  // jährliche Zahlung in periodische umrechnen
+  let perPeriodPayment;
+  if (d.monatsrate > 0) {
+    perPeriodPayment = d.monatsrate * (12 / periods);
+  } else {
+    const annualPayment = start * (annualRate + ((d.tilgung || 0) / 100));
+    perPeriodPayment = annualPayment / periods;
+  }
+  let rs = start, interest = 0;
+  for (let i = 0; i < periods; i++) {
+    const z = rs * pRate;
+    const t = Math.min(perPeriodPayment - z, rs);
+    interest += z;
+    rs = Math.max(0, rs - t);
+    if (rs <= 0) break;
+  }
+  return interest;
+};
+
+
+
 // ============================================================================
 // Datei-Komprimierung für Upload (max 2MB)
 // ============================================================================
@@ -3787,7 +3819,15 @@ const slGeneratePrompt = (immobilien) => {
   return `Du bist ein Experte für die Extraktion von Darlehens-/Kreditdaten aus Screenshots und Dokumenten.
 Extrahiere ALLE Darlehen / Kreditpositionen. Trenne strikt nach Zeilen/Blöcken.
 Deutsche Zahlenformate: "1.234,56" → 1234.56. Erfinde KEINE Werte.
-Beträge als Dezimalzahlen, Zinssätze als Dezimalzahl (z.B. 3.5), Datum YYYY-MM-DD.${ctx}
+Beträge als Dezimalzahlen, Zinssätze als Dezimalzahl (z.B. 3.5), Datum YYYY-MM-DD.
+
+WICHTIG - diese Felder besonders sorgfältig suchen (deutsche Begriffe):
+- "monthlyPayment" = monatliche Rate / Monatsrate / Annuität (mtl.). Falls nur eine Jahresrate/Annuität genannt ist, durch 12 teilen.
+- "repaymentRate" = anfänglicher Tilgungssatz / Anfangstilgung in % (NICHT Sondertilgung!).
+- "specialRepayment" = Sondertilgung in % p.a. (Sondertilgungsrecht).
+- "startDate" = Abschluss-/Vertragsdatum des Darlehens.
+- "firstPaymentDate" = Termin der ersten Rate / Ratenbeginn / Zahlbeginn.
+- "fixedRateEnd" = Ende der Sollzinsbindung (Datum).${ctx}
 
 Antworte NUR mit validem JSON:
 {
@@ -4356,16 +4396,17 @@ const cmUnit = (immo) => {
   const ga = s.erbbaurecht ? 0 : (s.eigentumsart==='gesamt' ? gwg : (s.teileigentumsanteil>0 ? (s.teileigentumsanteil/10000)*gwg : 0));
   const afaGeb = ((kp+nk)-ga)*((s.afaSatz||3)/100);
   const saSumme = (s.sonderausstattung||[]).reduce((a,i)=>a+(i.betrag||0),0);
-  const afaGes = afaGeb + saSumme*0.1 + (s.degressiveAfa||0);
+  const afaSA = saSumme*0.1;
+  const afaGes = afaGeb + afaSA + (s.degressiveAfa||0);
   const fk = darlehen.reduce((a,d)=>a+(d.restschuld||d.betrag||0),0);
   const rate = darlehen.reduce((a,d)=>a+(d.monatsrate>0?d.monatsrate:(d.betrag>0&&d.zinssatz>0?d.betrag*((d.zinssatz+(d.tilgung||0))/100)/12:0)),0);
-  return {kp,nk,jm,wohnflaeche:(s.wohnflaeche||0),afaGes,fk,rate,saSumme,saCount:(s.sonderausstattung||[]).length};
+  return {kp,nk,jm,wohnflaeche:(s.wohnflaeche||0),afaGeb,afaSA,afaGes,fk,rate,saSumme,saCount:(s.sonderausstattung||[]).length};
 };
 const cmAgg = (container, children) => {
   const own = cmUnit(container);
-  const acc = children.reduce((a,u)=>{const m=cmUnit(u);a.kp+=m.kp;a.nk+=m.nk;a.jm+=m.jm;a.wohnflaeche+=m.wohnflaeche;a.afaGes+=m.afaGes;a.fk+=m.fk;a.rate+=m.rate;a.saSumme+=m.saSumme;a.saCount+=m.saCount;return a;},{kp:0,nk:0,jm:0,wohnflaeche:0,afaGes:0,fk:0,rate:0,saSumme:0,saCount:0});
-  const kp = own.kp+acc.kp, nk = own.nk+acc.nk, ak = kp+nk, jm = acc.jm;
-  return {kp,nk,ak,jm,mm:jm/12,rendite:kp>0?jm/kp:0,kaufpreisfaktor:jm>0?kp/jm:0,afaGeb:0,afaGes:own.afaGes+acc.afaGes,wohnflaeche:own.wohnflaeche+acc.wohnflaeche,fk:own.fk+acc.fk,rate:own.rate+acc.rate,saSumme:own.saSumme+acc.saSumme,saCount:own.saCount+acc.saCount};
+  const acc = children.reduce((a,u)=>{const m=cmUnit(u);a.kp+=m.kp;a.nk+=m.nk;a.jm+=m.jm;a.wohnflaeche+=m.wohnflaeche;a.afaGeb+=m.afaGeb;a.afaSA+=m.afaSA;a.afaGes+=m.afaGes;a.fk+=m.fk;a.rate+=m.rate;a.saSumme+=m.saSumme;a.saCount+=m.saCount;return a;},{kp:0,nk:0,jm:0,wohnflaeche:0,afaGeb:0,afaSA:0,afaGes:0,fk:0,rate:0,saSumme:0,saCount:0});
+  const kp = own.kp+acc.kp, nk = own.nk+acc.nk, ak = kp+nk, jm = own.jm+acc.jm;
+  return {kp,nk,ak,jm,mm:jm/12,rendite:kp>0?jm/kp:0,kaufpreisfaktor:jm>0?kp/jm:0,afaGeb:own.afaGeb+acc.afaGeb,afaSA:own.afaSA+acc.afaSA,afaGes:own.afaGes+acc.afaGes,wohnflaeche:own.wohnflaeche+acc.wohnflaeche,fk:own.fk+acc.fk,rate:own.rate+acc.rate,saSumme:own.saSumme+acc.saSumme,saCount:own.saCount+acc.saCount,ga:0};
 };
 
 const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, validationErrors = {}, beteiligte = [], immobilien = [], onSmartImport, onAddEinheit, onSelectEinheit, onAssignEinheit, onDetachEinheit, onDeleteUnit, onUpdateUnit, onSplitToUnit, onConvertToContainer }) => {
@@ -4393,6 +4434,7 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
   const zuordenbar = (immobilien || []).filter(x => !x.isContainer && !x.parentId && x.id !== p.id && x.saved);
   const isCont = p.isContainer && einheiten.length > 0;
   const cc = isCont ? cmAgg(p, einheiten) : c;
+  const darlehenModus = p.darlehenModus || 'objekt';
   const zuPruefen = p.zuPruefen || [];
   const istImportiert = p.importiert && zuPruefen.length > 0;
   
@@ -5304,12 +5346,20 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
             return (
               <div style={{padding:'12px',marginBottom:'14px',border:'1px solid #3b82f6',borderRadius:'8px',background:'rgba(59,130,246,0.06)'}}>
                 <div style={{fontSize:'13px',fontWeight:'600',marginBottom:'8px'}}>📊 Finanzierung gesamt ({allLoans.length} Darlehen)</div>
+                <div style={{display:'flex',gap:'6px',marginBottom:'10px'}}>
+                  <label style={{flex:1,display:'flex',alignItems:'center',gap:'6px',padding:'7px 9px',fontSize:'11px',borderRadius:'6px',cursor:'pointer',border:`1px solid ${darlehenModus==='objekt'?'#3b82f6':'var(--border)'}`,background:darlehenModus==='objekt'?'rgba(59,130,246,0.12)':'transparent'}}>
+                    <input type="radio" name="dl-modus" checked={darlehenModus==='objekt'} onChange={() => upd({...p, darlehenModus:'objekt'})} style={{accentColor:'#3b82f6'}}/>Ein Darlehen fürs Objekt
+                  </label>
+                  <label style={{flex:1,display:'flex',alignItems:'center',gap:'6px',padding:'7px 9px',fontSize:'11px',borderRadius:'6px',cursor:'pointer',border:`1px solid ${darlehenModus==='einheit'?'#3b82f6':'var(--border)'}`,background:darlehenModus==='einheit'?'rgba(59,130,246,0.12)':'transparent'}}>
+                    <input type="radio" name="dl-modus" checked={darlehenModus==='einheit'} onChange={() => upd({...p, darlehenModus:'einheit'})} style={{accentColor:'#3b82f6'}}/>Darlehen je Einheit
+                  </label>
+                </div>
                 <div style={{display:'flex',flexDirection:'column',gap:'4px',fontSize:'12px'}}>
                   <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>Darlehenssumme</span><b>{fmt(sumBetrag)}</b></div>
                   <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>Restschuld gesamt</span><b>{fmt(sumRest)}</b></div>
                   <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>Monatsrate gesamt</span><b>{fmt(rate(allLoans))}/Mon.</b></div>
                 </div>
-                {einheiten.length > 0 && (
+                {einheiten.length > 0 && darlehenModus === 'einheit' && (
                   <div style={{marginTop:'10px'}}>
                     <div style={{fontSize:'11px',fontWeight:'600',marginBottom:'6px',color:'var(--text-muted)'}}>Darlehen je Einheit</div>
                     <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
@@ -5495,12 +5545,24 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
                     }} /><span>€</span></div>
                   </div>
                   <div className="darlehen-field">
-                    <label>Sondertilgung</label>
+                    <label>Sondertilgung (% p.a.)</label>
                     <div className="ifld"><NumInput value={d.sondertilgung || ''} onChange={v => {
                       const newD = [...(p.darlehen || [])];
                       newD[i] = { ...newD[i], sondertilgung: v };
                       upd({ ...p, darlehen: newD });
                     }} placeholder="p.a." /><span>%</span></div>
+                  </div>
+                  <div className="darlehen-field">
+                    <label>Tilgungsverrechnung</label>
+                    <select value={d.tilgungsrhythmus || 'monatlich'} onChange={e => {
+                      const newD = [...(p.darlehen || [])];
+                      newD[i] = { ...newD[i], tilgungsrhythmus: e.target.value };
+                      upd({ ...p, darlehen: newD });
+                    }} style={{padding:'8px 10px',background:'var(--bg-input)',border:'1px solid var(--border)',borderRadius:'6px',color:'var(--text)',fontSize:'13px',width:'100%'}}>
+                      <option value="monatlich">monatlich</option>
+                      <option value="quartalsweise">quartalsweise</option>
+                      <option value="jaehrlich">jährlich</option>
+                    </select>
                   </div>
                 </div>
               </div>
@@ -5574,7 +5636,7 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
                       <span>≈ {fmt(d.betrag * ((d.zinssatz + (d.tilgung || 0)) / 100) / 12)}/Monat</span>
                     </>
                   )}
-                  <span>Zinsen Jahr 1: {fmt(d.betrag * (d.zinssatz / 100))}</span>
+                  <span>Zinsen Jahr 1: {fmt(computeYearlyInterest(d))} <span style={{color:'var(--text-muted)',fontSize:'10px'}}>({d.tilgungsrhythmus || 'monatlich'})</span></span>
                   <button className="btn-tilgungsplan" onClick={() => setTilgungsplanDarlehen(d)} title="Tilgungsplan anzeigen">
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" strokeWidth="2"><rect x="3" y="10" width="4" height="11" rx="1"/><rect x="10" y="6" width="4" height="15" rx="1"/><rect x="17" y="2" width="4" height="19" rx="1"/></svg>
                     Tilgungsplan
@@ -6275,7 +6337,7 @@ const Rendite = ({ p, upd, c }) => {
 };
 
 // Steuer
-const Steuer = ({ p, upd, c }) => {
+const Steuer = ({ p, upd, c, immobilien = [] }) => {
   const kj = parseInt(p.stammdaten.kaufdatum?.split('-')[0]) || 2024;
   const [yr, setYr] = useState(kj);
   const [sec, setSec] = useState(null);
@@ -6319,7 +6381,10 @@ const Steuer = ({ p, upd, c }) => {
   const afaTot = afaG + afaS;
   // Erbbauzins automatisch als Werbungskosten berücksichtigen (falls Erbbaurecht)
   const erbbauzinsJahr = p.stammdaten.erbbaurecht ? (p.stammdaten.erbbauzins || 0) : 0;
-  const wkTot = yd.wk.reduce((a, x) => a + (x.betrag || 0), 0) + erbbauzinsJahr;
+  // Darlehenszinsen automatisch als Werbungskosten (Schätzung für yr): Restschuld × Sollzins
+  const _allLoans = [...(p.darlehen || []), ...(p.isContainer ? (immobilien || []).filter(x => x.parentId === p.id).flatMap(u => u.darlehen || []) : [])];
+  const zinsenJahr = _allLoans.reduce((a, d) => a + computeYearlyInterest(d), 0);
+  const wkTot = yd.wk.reduce((a, x) => a + (x.betrag || 0), 0) + erbbauzinsJahr + zinsenJahr;
 
   // Einnahmen nur aus bestätigten Feldern berechnen
   const confirmedVal = (field) => isFieldConfirmed(field) ? (yd[field] || 0) : 0;
@@ -6605,9 +6670,17 @@ Erstellt mit ImmoHub · ${new Date().toLocaleDateString('de-DE')}`;
           {c.saSumme > 0 && <div className="afa-box"><div className="afa-r"><span>Sonderausst. (10%)</span><span>{fmt(afaS)}</span></div><small>Basis: {fmt(c.saSumme)}</small></div>}
           <div className="res hl"><span>AfA Gesamt</span><span>{fmt(afaTot)}</span></div>
         </Acc>
-        <Acc icon={<IconWerbung color="#3b82f6" />} title="Werbungskosten" sum={yd.wk.length > 0 ? `${yd.wk.length}x, ${fmt(wkTot)}` : 'Keine'} open={sec === 'wk'} toggle={() => setSec(sec === 'wk' ? null : 'wk')} color="#3b82f6">
+        <Acc icon={<IconWerbung color="#3b82f6" />} title="Werbungskosten" sum={(yd.wk.length + (zinsenJahr>0?1:0) + (erbbauzinsJahr>0?1:0)) > 0 ? `${yd.wk.length + (zinsenJahr>0?1:0) + (erbbauzinsJahr>0?1:0)}x, ${fmt(wkTot)}` : 'Keine'} open={sec === 'wk'} toggle={() => setSec(sec === 'wk' ? null : 'wk')} color="#3b82f6">
+          {(zinsenJahr > 0 || erbbauzinsJahr > 0) && (
+            <div style={{marginBottom:'10px',padding:'10px',border:'1px solid #3b82f6',borderRadius:'8px',background:'rgba(59,130,246,0.06)'}}>
+              <div style={{fontSize:'12px',fontWeight:600,marginBottom:'6px'}}>⚡ Automatisch berücksichtigte Werbungskosten</div>
+              {zinsenJahr > 0 && <div style={{display:'flex',justifyContent:'space-between',fontSize:'12px',padding:'2px 0'}}><span style={{color:'var(--text-muted)'}}>Darlehenszinsen ({yr})</span><b>{fmt(zinsenJahr)}</b></div>}
+              {erbbauzinsJahr > 0 && <div style={{display:'flex',justifyContent:'space-between',fontSize:'12px',padding:'2px 0'}}><span style={{color:'var(--text-muted)'}}>Erbbauzins</span><b>{fmt(erbbauzinsJahr)}</b></div>}
+              <p style={{fontSize:'11px',color:'var(--text-muted)',margin:'6px 0 0'}}>Schätzung auf Basis Restschuld × Sollzinssatz aller Darlehen (Gebäude + Einheiten). Nicht doppelt unten erfassen.</p>
+            </div>
+          )}
           {yd.wk.map((x, i) => <div key={i} className="wk-row"><input value={x.bez} onChange={e => updWK(i, 'bez', e.target.value)} placeholder="Bezeichnung" /><NumInput value={x.betrag} onChange={v => updWK(i, 'betrag', v)} placeholder="€" /><button onClick={() => delWK(i)}>×</button></div>)}
-          <button className="btn-add" onClick={addWK}>+ Hinzufügen</button>
+          <button className="btn-add" onClick={addWK}>+ Manuelle Position</button>
           {wkTot > 0 && <div className="res hl"><span>WK Gesamt</span><span>{fmt(wkTot)}</span></div>}
         </Acc>
         <Acc icon={<IconEinnahmen color="#10b981" />} title="Einnahmen" sum={allConfirmed ? fmt(ein) : '⏳ Prüfen'} open={sec === 'ein'} toggle={() => setSec(sec === 'ein' ? null : 'ein')} color="#10b981">
@@ -7642,7 +7715,13 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
   };
 
   const isSaved = curr?.saved === true;
-  const c = useCalc(curr?.stammdaten);
+  const _cBase = useCalc(curr?.stammdaten);
+  const c = useMemo(() => {
+    if (!curr?.isContainer) return _cBase;
+    const kids = (saved || []).filter(x => x.parentId === curr.id);
+    const agg = cmAgg(curr, kids);
+    return { ..._cBase, kp: agg.kp, nk: agg.nk, ak: agg.ak, jm: agg.jm, mm: agg.mm, rendite: agg.rendite, kaufpreisfaktor: agg.kaufpreisfaktor, afaGeb: agg.afaGeb, afaSA: agg.afaSA, afaGes: agg.afaGes, fk: agg.fk, gwg: 0, ga: 0, saSumme: agg.saSumme };
+  }, [_cBase, curr, saved]);
 
   const onNew = () => { 
     setCurr(createEmpty()); 
@@ -9183,7 +9262,7 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
           <>
             {tab === 'stamm' && <Stamm p={curr} upd={onUpd} c={c} onSave={onSave} saved={isSaved} onOpenImport={() => setImportModal(true)} onDelete={() => setDeleteConfirm(curr?.id)} onDiscard={() => { setCurr(null); setTab('dash'); }} validationErrors={validationErrors} beteiligte={beteiligte} immobilien={saved} onSmartImport={handleSmartImport} onAddEinheit={onAddEinheit} onSelectEinheit={onSelect} onAssignEinheit={onAssignEinheit} onDetachEinheit={onDetachEinheit} onDeleteUnit={onDel} onUpdateUnit={onUpdateUnit} onSplitToUnit={onSplitToUnit} onConvertToContainer={onConvertToContainer} />}
             {tab === 'rendite' && isSaved && <Rendite p={curr} upd={onUpd} c={c} />}
-            {tab === 'steuer' && isSaved && <Steuer p={curr} upd={onUpd} c={c} />}
+            {tab === 'steuer' && isSaved && <Steuer p={curr} upd={onUpd} c={c} immobilien={saved} />}
           </>
         )}
       </main>
