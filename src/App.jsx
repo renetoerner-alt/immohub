@@ -6293,7 +6293,7 @@ const Rendite = ({ p, upd, c, immobilien = [] }) => {
       const st = vv * (s.steuersatz / 100);
       const liq = m - ko - ann - st;
       lk += liq;
-      jahre.push({ j, m, ko, zi, vv, st, liq, lk, rs });
+      jahre.push({ j, m, ko, zi, vv, st, liq, lk, rs, ann });
       rs = Math.max(0, rs - (ann - zi));
     }
     const be = jahre.findIndex(x => x.lk >= 0) + 1;
@@ -9645,5 +9645,3 @@ function AppContent() {
   if (!user) return <AuthScreen />;
   return <ImmoHubApp />;
 }
-
-    
