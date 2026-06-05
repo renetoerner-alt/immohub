@@ -4405,8 +4405,21 @@ const cmUnit = (immo) => {
 const cmAgg = (container, children) => {
   const own = cmUnit(container);
   const acc = children.reduce((a,u)=>{const m=cmUnit(u);a.kp+=m.kp;a.nk+=m.nk;a.jm+=m.jm;a.wohnflaeche+=m.wohnflaeche;a.afaGeb+=m.afaGeb;a.afaSA+=m.afaSA;a.afaGes+=m.afaGes;a.fk+=m.fk;a.rate+=m.rate;a.saSumme+=m.saSumme;a.saCount+=m.saCount;return a;},{kp:0,nk:0,jm:0,wohnflaeche:0,afaGeb:0,afaSA:0,afaGes:0,fk:0,rate:0,saSumme:0,saCount:0});
-  const kp = own.kp+acc.kp, nk = own.nk+acc.nk, ak = kp+nk, jm = own.jm+acc.jm;
-  return {kp,nk,ak,jm,mm:jm/12,rendite:kp>0?jm/kp:0,kaufpreisfaktor:jm>0?kp/jm:0,afaGeb:own.afaGeb+acc.afaGeb,afaSA:own.afaSA+acc.afaSA,afaGes:own.afaGes+acc.afaGes,wohnflaeche:own.wohnflaeche+acc.wohnflaeche,fk:own.fk+acc.fk,rate:own.rate+acc.rate,saSumme:own.saSumme+acc.saSumme,saCount:own.saCount+acc.saCount,ga:0};
+  // Per-Feld "entweder/oder": Liegt der Wert in den Einheiten, gilt deren Summe; sonst der Gebäude-Eigenwert. Verhindert Doppelzählung, wenn früher per "In Gebäude übernehmen" schon hochgerollt wurde.
+  const pick = (a, b) => a > 0 ? a : b;
+  const kp = pick(acc.kp, own.kp);
+  const nk = pick(acc.nk, own.nk);
+  const ak = kp + nk;
+  const jm = pick(acc.jm, own.jm);
+  const afaGeb = pick(acc.afaGeb, own.afaGeb);
+  const afaSA = pick(acc.afaSA, own.afaSA);
+  const afaGes = pick(acc.afaGes, own.afaGes);
+  const fk = pick(acc.fk, own.fk);
+  const rate = pick(acc.rate, own.rate);
+  const wohnflaeche = pick(acc.wohnflaeche, own.wohnflaeche);
+  const saSumme = pick(acc.saSumme, own.saSumme);
+  const saCount = acc.saCount > 0 ? acc.saCount : (own.saCount || 0);
+  return {kp,nk,ak,jm,mm:jm/12,rendite:kp>0?jm/kp:0,kaufpreisfaktor:jm>0?kp/jm:0,afaGeb,afaSA,afaGes,wohnflaeche,fk,rate,saSumme,saCount,ga:0};
 };
 
 const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, validationErrors = {}, beteiligte = [], immobilien = [], onSmartImport, onAddEinheit, onSelectEinheit, onAssignEinheit, onDetachEinheit, onDeleteUnit, onUpdateUnit, onSplitToUnit, onConvertToContainer }) => {
