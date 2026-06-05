@@ -6252,24 +6252,43 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
 };
 
 // Rendite
-const Rendite = ({ p, upd, c }) => {
+const Rendite = ({ p, upd, c, immobilien = [] }) => {
   const [tab, setTab] = useState('ov');
   const s = p.stammdaten;
   const r = p.rendite;
   const setR = (f, v) => upd({ ...p, rendite: { ...r, [f]: v } });
 
+  // Aggregation für Gebäude: Werte aus Einheiten heranziehen, sonst Stammdaten-Werte
+  const ce = useMemo(() => {
+    if (!p.isContainer) return c;
+    const kids = (immobilien || []).filter(x => x.parentId === p.id);
+    if (kids.length === 0) return c;
+    const agg = cmAgg(p, kids);
+    return { ...c, kp: agg.kp, nk: agg.nk, ak: agg.ak, jm: agg.jm, mm: agg.mm, rendite: agg.rendite, kaufpreisfaktor: agg.kaufpreisfaktor, afaGeb: agg.afaGeb, afaSA: agg.afaSA, afaGes: agg.afaGes, fk: agg.fk, wohnflaeche: agg.wohnflaeche, saSumme: agg.saSumme };
+  }, [c, p, immobilien]);
+
+  // Bei Container: Zinssatz/Tilgung aus dem ersten gefundenen Darlehen (Gebäude oder Einheiten), sonst Stammdaten
+  const allLoans = useMemo(() => {
+    const own = p.darlehen || [];
+    const kids = p.isContainer ? (immobilien || []).filter(x => x.parentId === p.id).flatMap(u => u.darlehen || []) : [];
+    return [...own, ...kids];
+  }, [p, immobilien]);
+  const effZinssatz = allLoans.find(d => d.zinssatz > 0)?.zinssatz || s.zinssatz || 0;
+  const effTilgung = allLoans.find(d => d.tilgung > 0)?.tilgung || s.tilgung || 0;
+  const effFlaeche = ce.wohnflaeche || s.wohnflaeche || 0;
+
   const proj = useMemo(() => {
-    const ek = c.ak * (s.eigenkapitalAnteil / 100);
-    const fk = c.ak - ek;
-    const ann = fk * ((s.zinssatz + s.tilgung) / 100);
+    const ek = ce.ak * (s.eigenkapitalAnteil / 100);
+    const fk = ce.ak - ek;
+    const ann = fk * ((effZinssatz + effTilgung) / 100);
     const jahre = [];
     let rs = fk, lk = 0;
     for (let j = 1; j <= 30; j++) {
       const mf = Math.pow(1 + r.mietanpassung / 100, j - 1);
-      const m = c.jm * mf * (1 - r.mietausfall / 52);
-      const ko = m * (r.kostenProzent / 100) + s.wohnflaeche * r.instandhaltung * mf;
-      const zi = rs * (s.zinssatz / 100);
-      const vv = m - ko - c.afaGes - zi;
+      const m = ce.jm * mf * (1 - r.mietausfall / 52);
+      const ko = m * (r.kostenProzent / 100) + effFlaeche * r.instandhaltung * mf;
+      const zi = rs * (effZinssatz / 100);
+      const vv = m - ko - ce.afaGes - zi;
       const st = vv * (s.steuersatz / 100);
       const liq = m - ko - ann - st;
       lk += liq;
@@ -6277,8 +6296,8 @@ const Rendite = ({ p, upd, c }) => {
       rs = Math.max(0, rs - (ann - zi));
     }
     const be = jahre.findIndex(x => x.lk >= 0) + 1;
-    return { jahre, be: be || '>30', ek, fk, ann, nr: c.kp > 0 ? (c.jm * (1 - r.kostenProzent / 100)) / c.kp : 0 };
-  }, [c, s, r]);
+    return { jahre, be: be || '>30', ek, fk, ann, nr: ce.kp > 0 ? (ce.jm * (1 - r.kostenProzent / 100)) / ce.kp : 0 };
+  }, [ce, s, r, effZinssatz, effTilgung, effFlaeche]);
 
   return (
     <div className="mod">
@@ -6286,14 +6305,14 @@ const Rendite = ({ p, upd, c }) => {
       {tab === 'ov' && (
         <>
           <div className="kpis">
-            <div className="kpi-c"><span>Bruttorendite</span><b>{fmtP(c.rendite)}</b></div>
+            <div className="kpi-c"><span>Bruttorendite</span><b>{fmtP(ce.rendite)}</b></div>
             <div className="kpi-c"><span>Nettorendite</span><b>{fmtP(proj.nr)}</b></div>
-            <div className="kpi-c"><span>€/qm</span><b>{fmt(s.wohnflaeche > 0 ? c.kp / s.wohnflaeche : 0)}</b></div>
-            <div className="kpi-c"><span>Jahres-Kaltmiete</span><b>{fmt(c.jm)}</b></div>
+            <div className="kpi-c"><span>€/qm</span><b>{fmt(effFlaeche > 0 ? ce.kp / effFlaeche : 0)}</b></div>
+            <div className="kpi-c"><span>Jahres-Kaltmiete</span><b>{fmt(ce.jm)}</b></div>
             <div className="kpi-c hl"><span>Break-Even</span><b>Jahr {proj.be}</b></div>
           </div>
           <div className="cards">
-            <div className="card"><h4>Investition</h4><div className="row"><span>Kaufpreis</span><span>{fmt(c.kp)}</span></div><div className="row"><span>+ Nebenkosten</span><span>{fmt(c.nk)}</span></div><div className="row tot"><span>= AK</span><span>{fmt(c.ak)}</span></div></div>
+            <div className="card"><h4>Investition</h4><div className="row"><span>Kaufpreis</span><span>{fmt(ce.kp)}</span></div><div className="row"><span>+ Nebenkosten</span><span>{fmt(ce.nk)}</span></div><div className="row tot"><span>= AK</span><span>{fmt(ce.ak)}</span></div></div>
             <div className="card"><h4>Finanzierung</h4><div className="row"><span>EK ({s.eigenkapitalAnteil}%)</span><span>{fmt(proj.ek)}</span></div><div className="row"><span>FK</span><span>{fmt(proj.fk)}</span></div><div className="row tot"><span>Annuität</span><span>{fmt(proj.ann)}</span></div></div>
           </div>
         </>
@@ -9274,7 +9293,7 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
         ) : (
           <>
             {tab === 'stamm' && <Stamm p={curr} upd={onUpd} c={c} onSave={onSave} saved={isSaved} onOpenImport={() => setImportModal(true)} onDelete={() => setDeleteConfirm(curr?.id)} onDiscard={() => { setCurr(null); setTab('dash'); }} validationErrors={validationErrors} beteiligte={beteiligte} immobilien={saved} onSmartImport={handleSmartImport} onAddEinheit={onAddEinheit} onSelectEinheit={onSelect} onAssignEinheit={onAssignEinheit} onDetachEinheit={onDetachEinheit} onDeleteUnit={onDel} onUpdateUnit={onUpdateUnit} onSplitToUnit={onSplitToUnit} onConvertToContainer={onConvertToContainer} />}
-            {tab === 'rendite' && isSaved && <Rendite p={curr} upd={onUpd} c={c} />}
+            {tab === 'rendite' && isSaved && <Rendite p={curr} upd={onUpd} c={c} immobilien={saved} />}
             {tab === 'steuer' && isSaved && <Steuer p={curr} upd={onUpd} c={c} immobilien={saved} />}
           </>
         )}
