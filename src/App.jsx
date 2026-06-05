@@ -6254,8 +6254,9 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
 // Rendite
 const Rendite = ({ p, upd, c, immobilien = [] }) => {
   const [tab, setTab] = useState('ov');
-  const s = p.stammdaten;
-  const r = p.rendite;
+  const s = p.stammdaten || {};
+  const RENDITE_DEFAULTS = { mietanpassung: 2, kostenProzent: 6, instandhaltung: 12, mietausfall: 4 };
+  const r = { ...RENDITE_DEFAULTS, ...(p.rendite || {}) };
   const setR = (f, v) => upd({ ...p, rendite: { ...r, [f]: v } });
 
   // Aggregation für Gebäude: Werte aus Einheiten heranziehen, sonst Stammdaten-Werte
@@ -9644,3 +9645,5 @@ function AppContent() {
   if (!user) return <AuthScreen />;
   return <ImmoHubApp />;
 }
+
+    
