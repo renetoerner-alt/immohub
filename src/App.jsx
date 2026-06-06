@@ -6358,9 +6358,10 @@ const Rendite = ({ p, upd, c, immobilien = [] }) => {
             <div className="kpi-c"><span>Nach 30 J.</span><b>{fmt(proj.jahre[29]?.lk)}</b></div>
           </div>
           <h4 className="section-title-first">Jährliche Liquiditätsübersicht</h4>
-          <div className="tbl-wrap"><table><thead><tr><th>Jahr</th><th>Miete</th><th>Kosten</th><th>Annuität</th><th>Liquidität</th><th>Kumuliert</th></tr></thead><tbody>
-            {proj.jahre.map(x => <tr key={x.j}><td>{x.j}</td><td className="pos">{fmt(x.m)}</td><td className="neg">{fmt(-x.ko)}</td><td className="neg">{fmt(-x.ann)}</td><td className={x.liq >= 0 ? 'pos' : 'neg'}>{fmt(x.liq)}</td><td className={x.lk >= 0 ? 'pos' : 'neg'}>{fmt(x.lk)}</td></tr>)}
+          <div className="tbl-wrap"><table><thead><tr><th>Jahr</th><th>Miete</th><th>Kosten</th><th>Annuität</th><th title="Steuerzahlung (Minus) oder Steuererstattung (Plus): Steuersatz × V+V. Bei Vermietungsverlust steuerlicher Vorteil → erhöht die Liquidität.">Steuer</th><th title="Miete − Kosten − Annuität − Steuer">Liquidität</th><th>Kumuliert</th></tr></thead><tbody>
+            {proj.jahre.map(x => <tr key={x.j}><td>{x.j}</td><td className="pos">{fmt(x.m)}</td><td className="neg">{fmt(-x.ko)}</td><td className="neg">{fmt(-x.ann)}</td><td className={(-x.st) >= 0 ? 'pos' : 'neg'}>{fmt(-x.st)}</td><td className={x.liq >= 0 ? 'pos' : 'neg'}>{fmt(x.liq)}</td><td className={x.lk >= 0 ? 'pos' : 'neg'}>{fmt(x.lk)}</td></tr>)}
           </tbody></table></div>
+          <p style={{fontSize:'11px',color:'var(--text-muted)',marginTop:'6px'}}>ℹ️ <b>Liquidität = Miete − Kosten − Annuität − Steuer</b>. Bei Vermietungsverlust (V+V negativ) ist die „Steuer"-Spalte positiv (Erstattung) und erhöht die Liquidität.</p>
           <h4 className="section-title">Kumulierte Liquidität über 30 Jahre</h4>
           <div className="chart">{[0, 4, 9, 14, 19, 24, 29].map(i => { const x = proj.jahre[i]; if (!x) return null; const max = Math.max(...proj.jahre.map(y => Math.abs(y.lk))); return <div key={x.j} className="bar-row"><span>J{x.j}</span><div className="bar-bg"><div className={`bar ${x.lk >= 0 ? 'pos' : 'neg'}`} style={{ width: `${Math.abs(x.lk) / max * 100}%` }} /></div><span className={x.lk >= 0 ? 'pos' : 'neg'}>{fmt(x.lk)}</span></div>; })}</div>
         </>
@@ -6995,7 +6996,7 @@ const Dashboard = ({ immobilien, onSelectImmo, aktiveBeteiligte = [], beteiligte
       progress,
       anteil,
       zinsbindungWarning,
-      darlehensRate: agg ? agg.rate : darlehensRate
+      darlehensRate: (agg ? agg.rate : darlehensRate) * faktor
     };
   });
 
