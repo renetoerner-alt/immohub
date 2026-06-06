@@ -931,6 +931,7 @@ const createEmpty = () => ({
     etage: '',
     verkehrswert: 0,
     verkehrswertDatum: '',
+    besitzstatus: 'eigentum', // 'eigentum' | 'interesse' (potenzieller Kauf)
     kaufpreisImmobilie: 0, kaufpreisStellplatz: 0,
     grundstueckGroesse: 0, bodenrichtwert: 0, teileigentumsanteil: 0,
     wohnflaeche: 0, mieteProQm: 0, mieteStellplatz: 0, anzahlStellplaetze: 1,
@@ -4400,11 +4401,11 @@ const cmUnit = (immo) => {
   const afaGes = afaGeb + afaSA + (s.degressiveAfa||0);
   const fk = darlehen.reduce((a,d)=>a+(d.restschuld||d.betrag||0),0);
   const rate = darlehen.reduce((a,d)=>a+(d.monatsrate>0?d.monatsrate:(d.betrag>0&&d.zinssatz>0?d.betrag*((d.zinssatz+(d.tilgung||0))/100)/12:0)),0);
-  return {kp,nk,jm,wohnflaeche:(s.wohnflaeche||0),afaGeb,afaSA,afaGes,fk,rate,saSumme,saCount:(s.sonderausstattung||[]).length};
+  return {kp,nk,jm,wohnflaeche:(s.wohnflaeche||0),verkehrswert:(s.verkehrswert||0),afaGeb,afaSA,afaGes,fk,rate,saSumme,saCount:(s.sonderausstattung||[]).length};
 };
 const cmAgg = (container, children) => {
   const own = cmUnit(container);
-  const acc = children.reduce((a,u)=>{const m=cmUnit(u);a.kp+=m.kp;a.nk+=m.nk;a.jm+=m.jm;a.wohnflaeche+=m.wohnflaeche;a.afaGeb+=m.afaGeb;a.afaSA+=m.afaSA;a.afaGes+=m.afaGes;a.fk+=m.fk;a.rate+=m.rate;a.saSumme+=m.saSumme;a.saCount+=m.saCount;return a;},{kp:0,nk:0,jm:0,wohnflaeche:0,afaGeb:0,afaSA:0,afaGes:0,fk:0,rate:0,saSumme:0,saCount:0});
+  const acc = children.reduce((a,u)=>{const m=cmUnit(u);a.kp+=m.kp;a.nk+=m.nk;a.jm+=m.jm;a.wohnflaeche+=m.wohnflaeche;a.verkehrswert+=m.verkehrswert;a.afaGeb+=m.afaGeb;a.afaSA+=m.afaSA;a.afaGes+=m.afaGes;a.fk+=m.fk;a.rate+=m.rate;a.saSumme+=m.saSumme;a.saCount+=m.saCount;return a;},{kp:0,nk:0,jm:0,wohnflaeche:0,verkehrswert:0,afaGeb:0,afaSA:0,afaGes:0,fk:0,rate:0,saSumme:0,saCount:0});
   // Per-Feld "entweder/oder": Liegt der Wert in den Einheiten, gilt deren Summe; sonst der Gebäude-Eigenwert. Verhindert Doppelzählung, wenn früher per "In Gebäude übernehmen" schon hochgerollt wurde.
   const pick = (a, b) => a > 0 ? a : b;
   const kp = pick(acc.kp, own.kp);
@@ -4419,7 +4420,8 @@ const cmAgg = (container, children) => {
   const wohnflaeche = pick(acc.wohnflaeche, own.wohnflaeche);
   const saSumme = pick(acc.saSumme, own.saSumme);
   const saCount = acc.saCount > 0 ? acc.saCount : (own.saCount || 0);
-  return {kp,nk,ak,jm,mm:jm/12,rendite:kp>0?jm/kp:0,kaufpreisfaktor:jm>0?kp/jm:0,afaGeb,afaSA,afaGes,wohnflaeche,fk,rate,saSumme,saCount,ga:0};
+  const verkehrswert = pick(acc.verkehrswert, own.verkehrswert);
+  return {kp,nk,ak,jm,mm:jm/12,rendite:kp>0?jm/kp:0,kaufpreisfaktor:jm>0?kp/jm:0,afaGeb,afaSA,afaGes,wohnflaeche,verkehrswert,fk,rate,saSumme,saCount,ga:0};
 };
 
 const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, validationErrors = {}, beteiligte = [], immobilien = [], onSmartImport, onAddEinheit, onSelectEinheit, onAssignEinheit, onDetachEinheit, onDeleteUnit, onUpdateUnit, onSplitToUnit, onConvertToContainer }) => {
@@ -4572,6 +4574,19 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
       </div>
       <div className="accs">
         <Acc icon={<IconObjekt color="#6366f1" />} title="Objekt" sum={(p.isContainer ? '🏢 Gebäude · ' : '') + (s.name || 'Name eingeben...')} open={sec === 'obj'} toggle={() => setSec(sec === 'obj' ? null : 'obj')} color="#6366f1" onImport={onOpenImport}>
+          {/* === Besitzstatus: Eigentum vs. Interesse === */}
+          {!parentGebaeude && (
+            <div style={{display:'flex',gap:'8px',padding:'10px',marginBottom:'12px',background:'rgba(34,197,94,0.05)',border:'1px solid rgba(34,197,94,0.2)',borderRadius:'8px'}}>
+              <label style={{flex:1,display:'flex',alignItems:'center',gap:'8px',padding:'8px 10px',background:(s.besitzstatus||'eigentum')==='eigentum'?'rgba(34,197,94,0.18)':'transparent',border:`1px solid ${(s.besitzstatus||'eigentum')==='eigentum'?'#22c55e':'var(--border)'}`,borderRadius:'6px',cursor:'pointer'}}>
+                <input type="radio" name="besitzstatus" checked={(s.besitzstatus||'eigentum')==='eigentum'} onChange={() => set('besitzstatus','eigentum')} style={{accentColor:'#22c55e'}}/>
+                <span style={{fontSize:'13px',fontWeight:(s.besitzstatus||'eigentum')==='eigentum'?'600':'400'}}>✓ Im Eigentum</span>
+              </label>
+              <label style={{flex:1,display:'flex',alignItems:'center',gap:'8px',padding:'8px 10px',background:s.besitzstatus==='interesse'?'rgba(245,158,11,0.18)':'transparent',border:`1px solid ${s.besitzstatus==='interesse'?'#f59e0b':'var(--border)'}`,borderRadius:'6px',cursor:'pointer'}}>
+                <input type="radio" name="besitzstatus" checked={s.besitzstatus==='interesse'} onChange={() => set('besitzstatus','interesse')} style={{accentColor:'#f59e0b'}}/>
+                <span style={{fontSize:'13px',fontWeight:s.besitzstatus==='interesse'?'600':'400'}}>👀 Potenzieller Kauf</span>
+              </label>
+            </div>
+          )}
           {/* === Hierarchie: Einheit-Navigation oder Gebäude-Toggle === */}
           {parentGebaeude ? (
             <div onClick={() => onSelectEinheit && onSelectEinheit(parentGebaeude)} style={{display:'flex',alignItems:'center',gap:'8px',padding:'10px 12px',marginBottom:'12px',background:'rgba(99,102,241,0.08)',border:'1px solid rgba(99,102,241,0.25)',borderRadius:'8px',cursor:'pointer'}}>
@@ -6980,6 +6995,8 @@ const Dashboard = ({ immobilien, onSelectImmo, aktiveBeteiligte = [], beteiligte
     
     const _kids = immo.isContainer ? immobilien.filter(x => x.parentId === immo.id) : [];
     const agg = _kids.length > 0 ? cmAgg(immo, _kids) : null;
+    const verkehrswert = agg ? agg.verkehrswert : (s.verkehrswert || 0);
+    const gesamtwert = verkehrswert > 0 ? verkehrswert : ((agg ? agg.kp : kp));
     return { 
       ...immo, 
       kp: (agg ? agg.kp : kp) * faktor, 
@@ -6996,7 +7013,10 @@ const Dashboard = ({ immobilien, onSelectImmo, aktiveBeteiligte = [], beteiligte
       progress,
       anteil,
       zinsbindungWarning,
-      darlehensRate: (agg ? agg.rate : darlehensRate) * faktor
+      darlehensRate: (agg ? agg.rate : darlehensRate) * faktor,
+      verkehrswert: verkehrswert * faktor,
+      gesamtwert: gesamtwert * faktor,
+      besitzstatus: s.besitzstatus || 'eigentum'
     };
   });
 
@@ -7005,11 +7025,12 @@ const Dashboard = ({ immobilien, onSelectImmo, aktiveBeteiligte = [], beteiligte
     ? immoData.filter(i => i.anteil > 0)
     : immoData;
 
-  // Schnellfilter
+  // Schnellfilter (Standard 'alle' = Bestand/Eigentum; 'interesse' = potenzielle Käufe)
   const filteredByType = filteredByBeteiligter.filter(i => {
-    if (filter === 'alle') return true;
-    if (filter === 'vermietet') return i.stammdaten.nutzung === 'vermietet';
-    if (filter === 'eigengenutzt') return i.stammdaten.nutzung === 'eigengenutzt';
+    if (filter === 'alle') return (i.besitzstatus || 'eigentum') === 'eigentum';
+    if (filter === 'interesse') return i.besitzstatus === 'interesse';
+    if (filter === 'vermietet') return (i.besitzstatus || 'eigentum') === 'eigentum' && i.stammdaten.nutzung === 'vermietet';
+    if (filter === 'eigengenutzt') return (i.besitzstatus || 'eigentum') === 'eigentum' && i.stammdaten.nutzung === 'eigengenutzt';
     if (filter === 'zupruefen') return i.importiert && i.zuPruefen?.length > 0;
     if (filter === 'zinsbindung') return i.zinsbindungWarning !== null;
     return true;
@@ -7060,6 +7081,7 @@ const Dashboard = ({ immobilien, onSelectImmo, aktiveBeteiligte = [], beteiligte
   // Gesamtsummen (basierend auf gefilterter Liste)
   const totals = filtered.reduce((acc, i) => ({
     kp: acc.kp + i.kp,
+    gw: acc.gw + (i.gesamtwert || i.kp),
     ak: acc.ak + i.ak,
     jm: acc.jm + i.jm,
     ek: acc.ek + i.ek,
@@ -7067,7 +7089,7 @@ const Dashboard = ({ immobilien, onSelectImmo, aktiveBeteiligte = [], beteiligte
     ann: acc.ann + i.ann,
     afaGes: acc.afaGes + i.afaGes,
     qm: acc.qm + i.wohnflaeche,
-  }), { kp: 0, ak: 0, jm: 0, ek: 0, fk: 0, ann: 0, afaGes: 0, qm: 0 });
+  }), { kp: 0, gw: 0, ak: 0, jm: 0, ek: 0, fk: 0, ann: 0, afaGes: 0, qm: 0 });
 
   const avgRendite = totals.kp > 0 ? totals.jm / totals.kp : 0;
   const weCount = filtered.reduce((acc, i) => acc + (i.isContainer ? immobilien.filter(x => x.parentId === i.id).length : 1), 0);
@@ -7123,6 +7145,13 @@ const Dashboard = ({ immobilien, onSelectImmo, aktiveBeteiligte = [], beteiligte
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={filter === 'eigengenutzt' ? '#fff' : '#10b981'} strokeWidth="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
           Eigengenutzt
         </button>
+        <button className={`dash-filter-btn ${filter === 'interesse' ? 'active' : ''}`} onClick={() => onFilterChange('interesse')}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={filter === 'interesse' ? '#fff' : '#f59e0b'} strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          Potenzielle Käufe
+          {immoData.filter(i => i.besitzstatus === 'interesse').length > 0 && (
+            <span className="filter-badge" style={{background:'rgba(245,158,11,0.25)',color:'#fbbf24'}}>{immoData.filter(i => i.besitzstatus === 'interesse').length}</span>
+          )}
+        </button>
         <button className={`dash-filter-btn ${filter === 'zupruefen' ? 'active' : ''}`} onClick={() => onFilterChange('zupruefen')}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={filter === 'zupruefen' ? '#fff' : '#f59e0b'} strokeWidth="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           Zu prüfen
@@ -7142,6 +7171,14 @@ const Dashboard = ({ immobilien, onSelectImmo, aktiveBeteiligte = [], beteiligte
           <div className="dtc-icon"><IconKaufpreis color="#10b981" /></div>
           <div className="dtc-info">
             <span>Gesamtwert</span>
+            <b>{fmt(totals.gw)}</b>
+            <small>{totals.gw > totals.kp ? '↑ ' : totals.gw < totals.kp ? '↓ ' : ''}{fmt(totals.gw - totals.kp)} ggü. Kaufpreis</small>
+          </div>
+        </div>
+        <div className="dash-total-card">
+          <div className="dtc-icon"><IconKaufpreis color="#3b82f6" /></div>
+          <div className="dtc-info">
+            <span>Kaufpreis</span>
             <b>{fmt(totals.kp)}</b>
             <small>Ø {fmt(totals.kp / Math.max(filtered.length, 1))} / Immobilie</small>
           </div>
