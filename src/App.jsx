@@ -4576,7 +4576,7 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
         <Acc icon={<IconObjekt color="#6366f1" />} title="Objekt" sum={(p.isContainer ? '🏢 Gebäude · ' : '') + (s.name || 'Name eingeben...')} open={sec === 'obj'} toggle={() => setSec(sec === 'obj' ? null : 'obj')} color="#6366f1" onImport={onOpenImport}>
           {/* === Besitzstatus: Eigentum vs. Interesse === */}
           {!parentGebaeude && (
-            <div style={{display:'flex',gap:'8px',padding:'10px',marginBottom:'12px',background:'rgba(34,197,94,0.05)',border:'1px solid rgba(34,197,94,0.2)',borderRadius:'8px'}}>
+            <div style={{display:'flex',gap:'6px',padding:'4px',marginBottom:'10px',background:'transparent',border:'1px solid var(--border)',borderRadius:'8px'}}>
               <label style={{flex:1,display:'flex',alignItems:'center',gap:'8px',padding:'8px 10px',background:(s.besitzstatus||'eigentum')==='eigentum'?'rgba(34,197,94,0.18)':'transparent',border:`1px solid ${(s.besitzstatus||'eigentum')==='eigentum'?'#22c55e':'var(--border)'}`,borderRadius:'6px',cursor:'pointer'}}>
                 <input type="radio" name="besitzstatus" checked={(s.besitzstatus||'eigentum')==='eigentum'} onChange={() => set('besitzstatus','eigentum')} style={{accentColor:'#22c55e'}}/>
                 <span style={{display:'inline-flex',alignItems:'center',width:'22px',height:'22px'}}><IconCheck color="#22c55e" /></span>
@@ -4596,7 +4596,7 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
               <span style={{fontSize:'13px'}}>Einheit in <b>🏢 {parentGebaeude.stammdaten?.name || 'Gebäude'}</b> · zurück zum Gebäude</span>
             </div>
           ) : (
-            <div className="container-toggle" style={{display:'flex',gap:'8px',padding:'10px',marginBottom:'12px',background:'rgba(99,102,241,0.05)',border:'1px solid rgba(99,102,241,0.2)',borderRadius:'8px'}}>
+            <div className="container-toggle" style={{display:'flex',gap:'6px',padding:'4px',marginBottom:'10px',background:'transparent',border:'1px solid var(--border)',borderRadius:'8px'}}>
               <label style={{flex:1,display:'flex',alignItems:'center',gap:'8px',padding:'8px 10px',background:!p.isContainer?'rgba(99,102,241,0.15)':'transparent',border:`1px solid ${!p.isContainer?'#6366f1':'var(--border)'}`,borderRadius:'6px',cursor:'pointer'}}>
                 <input type="radio" name="immo-typ" checked={!p.isContainer} onChange={() => upd({...p, isContainer: false})} style={{accentColor:'#6366f1'}}/>
                 <span style={{fontSize:'13px',fontWeight:!p.isContainer?'600':'400'}}>Eigenständige Einheit</span>
@@ -8183,7 +8183,7 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
         .accs-secondary-content{padding:10px;display:flex;flex-direction:column;gap:6px}
         .acc{background:var(--bg-card);border:1px solid var(--border);border-radius:8px;overflow:hidden}
         .acc.open{border-color:var(--c)}
-        .acc-h{display:flex;align-items:center;gap:10px;padding:12px 14px;cursor:pointer}
+        .acc-h{display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer}
         .acc-h:hover{background:var(--bg-input)}
         .acc-i{width:32px;height:32px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,0.03);border-radius:8px;border:1px solid rgba(255,255,255,0.06);overflow:hidden}
         .acc-i svg{width:20px;height:20px}
@@ -8200,29 +8200,37 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
         .acc.disabled{opacity:0.5}
         .acc.disabled .acc-h{cursor:not-allowed}
         .acc.disabled .acc-h:hover{background:transparent}
-        .acc-body{padding:0 14px 14px;border-top:1px solid var(--border);animation:sd .2s;max-width:1100px;margin:0 auto}
+        .acc-body{padding:6px 18px 16px;border-top:1px solid var(--border);animation:sd .2s;max-width:880px;margin:0 auto}
         .acc-body>svg,.acc-body .nk-section>svg{max-width:48px;max-height:48px}
         @keyframes sd{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:translateY(0)}}
         
-        .irow{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);gap:12px}
+        .irow{display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);gap:14px;min-height:36px;transition:background 0.12s}
         .irow:last-child{border-bottom:none}
-        .irow label{font-size:12px;color:var(--text-muted);flex-shrink:0;min-width:160px}
+        .irow:hover{background:rgba(255,255,255,0.015)}
+        .app.light .irow:hover{background:rgba(0,0,0,0.018)}
+        .irow label{font-size:12px;color:var(--text-muted);flex-shrink:0;min-width:140px;font-weight:400}
         .ifld-wrap{display:flex;flex-direction:column;gap:2px;flex:1}
-        .ifld{display:flex;align-items:center;gap:5px;flex:1}
+        .ifld{display:flex;align-items:center;gap:5px;flex:1;max-width:520px;margin-left:auto}
         .ifld.input-error input,.ifld.input-error select{border-color:#ef4444;background:rgba(239,68,68,0.1)}
         .validation-error{color:#ef4444;font-size:10px}
         .validation-banner{display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);border-radius:8px;margin-bottom:14px;font-size:13px;color:#ef4444}
         .validation-banner-icon{width:20px;height:20px;display:flex;align-items:center}
         .validation-banner-icon svg{width:20px;height:20px}
-        .ifld input{width:110px;padding:7px 9px;background:var(--bg-input);border:1px solid var(--border);border-radius:5px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:12px;text-align:right}
-        .ifld select{min-width:240px;flex:1;padding:7px 9px;background:var(--bg-input);border:1px solid var(--border);border-radius:5px;color:var(--text);font-family:'Inter',sans-serif;font-size:12px;text-align:left;text-overflow:ellipsis}
-        .ifld input[type="text"]{flex:1;min-width:200px;width:100%;text-align:left;font-family:'Inter',sans-serif}
+        .ifld input{width:130px;padding:5px 9px;background:transparent;border:1px solid transparent;border-radius:5px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:13px;text-align:right;transition:all 0.12s}
+        .ifld input:hover{background:var(--bg-input)}
+        .ifld input:focus{background:var(--bg-input);border-color:#3b82f6}
+        .ifld select{min-width:220px;flex:1;padding:5px 30px 5px 10px;background:transparent;border:1px solid transparent;border-radius:5px;color:var(--text);font-family:'Inter',sans-serif;font-size:13px;text-align:left;text-overflow:ellipsis;cursor:pointer;-webkit-appearance:none;-moz-appearance:none;appearance:none;background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2371717a' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 8px center;background-size:14px;transition:all 0.12s}
+        .ifld select:hover{background-color:var(--bg-input)}
+        .ifld select:focus{background-color:var(--bg-input);border-color:#3b82f6}
+        .ifld input[type="text"]{flex:1;min-width:200px;width:100%;text-align:left;font-family:'Inter',sans-serif;font-size:13px}
         
         /* DateInput Component */
         .date-input-wrapper{display:flex;align-items:center;flex:1;position:relative}
-        .date-input-text{flex:1;min-width:100px;padding:8px 10px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px 0 0 6px;color:var(--text);font-size:13px;font-family:'JetBrains Mono',monospace}
+        .date-input-text{flex:1;min-width:100px;padding:5px 10px;background:transparent;border:1px solid transparent;border-radius:5px 0 0 5px;color:var(--text);font-size:13px;font-family:'JetBrains Mono',monospace;transition:all 0.12s}
+        .date-input-text:hover{background:var(--bg-input)}
         .date-input-text:focus{outline:none;border-color:#6366f1}
-        .date-calendar-btn{padding:8px 10px;background:var(--bg-input);border:1px solid var(--border);border-left:none;border-radius:0 6px 6px 0;color:var(--text-dim);cursor:pointer;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden}
+        .date-calendar-btn{padding:5px 8px;background:transparent;border:1px solid transparent;border-left:none;border-radius:0 5px 5px 0;color:var(--text-dim);cursor:pointer;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;transition:all 0.12s}
+        .ifld:hover .date-calendar-btn{background:var(--bg-input)}
         .date-calendar-btn:hover{background:rgba(99,102,241,0.1);color:#6366f1}
         .date-calendar-btn svg{position:relative;z-index:1;pointer-events:none}
         .date-input-native{position:absolute;top:0;left:0;width:100%;height:100%;opacity:0;cursor:pointer}
@@ -8255,7 +8263,7 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
         .hint{font-size:11px;color:var(--text-dim);margin:10px 0}
         .hint-small{font-size:10px;color:var(--text-dim);margin:-6px 0 10px 0;font-style:italic}
         .foerderung-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-        .field-row-2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+        .field-row-2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
         .field-with-btn{display:flex;gap:6px;align-items:flex-end}
         .field-with-btn .field{flex:1}
         .auto-gen-btn{display:flex;align-items:center;justify-content:center;padding:6px 8px;background:transparent;border:1px solid var(--border);border-radius:5px;color:var(--text-dim);font-size:10px;cursor:pointer;white-space:nowrap;margin-bottom:10px;height:34px;opacity:0.6;transition:all 0.15s}
