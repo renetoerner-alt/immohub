@@ -1345,7 +1345,7 @@ const Modal = ({ items, onSelect, onNew, onClose, onDel, onOpenImport, onDuplica
                     <div className="immo-meta">
                       {i.isContainer
                         ? `${(items.filter(x => x.parentId === i.id).length)} Einheit(en) · ${fmt(i.stammdaten.kaufpreisImmobilie)}`
-                        : `${i.stammdaten.wohnflaeche} qm · ${fmt(i.stammdaten.kaufpreisImmobilie)}`}
+                        : `${Number(i.stammdaten.wohnflaeche || 0).toLocaleString('de-DE', { maximumFractionDigits: 2 })} qm · ${fmt(i.stammdaten.kaufpreisImmobilie)}`}
                     </div>
                   </div>
                   <div className="immo-actions">
@@ -1647,6 +1647,7 @@ Analysiere das Dokument und extrahiere alle relevanten Daten.
 
 SCHRITT 1: Erkenne den Dokumenttyp:
 - "kaufvertrag" - Kaufvertrag, Exposé (meist 1 Immobilie)
+- "teilungserklaerung" - Teilungserklärung (notariell, WEG-Aufteilung; meist MEHRERE Wohnungen mit Teileigentumsanteilen)
 - "mietvertrag" - Mietvertrag, Mieterhöhung (meist 1 Immobilie)
 - "darlehen_liste" - Liste/Übersicht von Darlehen/Finanzierungen (MEHRERE Darlehen!)
 - "darlehen" - Einzelner Darlehensvertrag, Finanzierungsbestätigung
@@ -1676,7 +1677,7 @@ Antworte NUR mit einem validen JSON-Objekt. Keine Erklärungen, kein Markdown.
 
 Format:
 {
-  "dokumentTyp": "kaufvertrag|mietvertrag|darlehen|darlehen_liste|nebenkostenabrechnung|grundbuch|auflistung|sonstiges",
+  "dokumentTyp": "kaufvertrag|teilungserklaerung|mietvertrag|darlehen|darlehen_liste|nebenkostenabrechnung|grundbuch|auflistung|sonstiges",
   "dokumentBeschreibung": "Kurze Beschreibung was für ein Dokument es ist",
   "immobilien": [{
     "lfdNr": 1,
@@ -1691,7 +1692,7 @@ Format:
     "nutzung": "vermietet|eigengenutzt",
     "bundesland": "hessen",
     "kaufdatum": "YYYY-MM-DD",
-    "baujahr": 2020,
+    "baujahr": 2020,  // NUR wenn im Dokument explizit genannt — sonst Feld weglassen!
     "verkehrswert": 280000,
     "kaufpreisImmobilie": 250000,
     "kaufpreisStellplatz": 15000,
@@ -1784,6 +1785,21 @@ WICHTIG - WEITERE FELDER:
 - "eigentumsart": "gesamt" wenn es ein ungeteiltes MFH/Gesamteigentum ist (kein Teileigentum, ein Grundbuchblatt), sonst "weg" (Eigentumswohnung mit Teilungserklärung)
 - "erbbaurecht": true wenn das Grundstück im Erbbaurecht ist (Erbbauzins), sonst false; "erbbauzins": jährlicher Erbbauzins in EUR
 - "ausbaureserveFlaeche"/"ausbaureserveBeschreibung": Ausbaureserve/Entwicklungspotenzial (z.B. "DG-Ausbau ca. 146 qm möglich")
+WICHTIG - TEILUNGSERKLÄRUNG:
+Eine Teilungserklärung ist ein notarielles Dokument, das ein Gebäude in Wohnungs-/Teileigentum aufteilt (§ 8 WEG). Erkennungsmerkmale: "Teilungserklärung", "Aufteilung in Wohnungseigentum", "Wohnungseigentumsgrundbuch", Notar-Urkunde, "Sondereigentum", "Miteigentumsanteil".
+- IMMER mehrere Einträge → "immobilien"-Array mit allen Wohnungen
+- "eigentumsart": IMMER "weg" (Teilungserklärung definiert WEG)
+- "wohnungsNr": die Nummer aus der TE (z.B. "1", "2", "Nr. 3")
+- "teileigentumsanteil": Miteigentumsanteil. In der TE meist als x/1.000 oder x/10.000 angegeben. UMRECHNEN auf /10.000 (z.B. "150/1.000" → 1500; "1.500/10.000" → 1500; "15,00/100" → 1500).
+- "wohnflaeche": qm Wohnfläche der Einheit (oft im Aufteilungsplan)
+- "etage": "EG", "1. OG", "DG", "Souterrain" etc.
+- "anzahlStellplaetze": falls Stellplatz/Tiefgaragenplatz zur Einheit gehört
+- "ausbaureserveBeschreibung": Wenn Sondernutzungsrechte/Sondereigentum beschrieben sind (Garten, Keller, Speicher)
+- "objektstatus": "neubau" wenn TE neu erstellt, "bestand" wenn Aufteilung eines Bestandsgebäudes
+- Falls die TE einen Bauträger/Verkäufer nennt, kann der als "eigentuemer" übernommen werden
+- Adresse des Gesamtgebäudes geht in "adresse" jeder Einheit (alle haben gleiche Hausadresse)
+- Wenn Stellplätze als EIGENE TEILEIGENTUMSEINHEITEN nummeriert sind (z.B. "Nr. 10 Tiefgaragenstellplatz"), trotzdem als einzelne Einheit erfassen — Typ bleibt "etw" oder Hinweis im Namen "Stellplatz Nr. X"
+
 - "gefundeneFelder" enthält die Namen aller extrahierten Felder`;
 
 const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten = [] }) => {
@@ -2104,7 +2120,7 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
 
     docs.forEach(doc => {
       const list = doc.immobilien || [];
-      const isUnitDoc = list.length > 1 || ['mietvertrag', 'auflistung'].includes(doc.dokumentTyp);
+      const isUnitDoc = list.length > 1 || ['mietvertrag', 'auflistung', 'teilungserklaerung'].includes(doc.dokumentTyp);
       if (isUnitDoc) {
         list.forEach(u => units.push(u));
       } else {
@@ -2315,10 +2331,32 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
       }
     });
     
+    // FIX: bestehende Darlehen ERHALTEN, neu importierte ERGÄNZEN (nichts überschreiben!)
+    const incomingLoans = Array.isArray(parsedData.mergeData.newData?.darlehen) ? parsedData.mergeData.newData.darlehen : [];
+    const existingLoans = existingImmo.darlehen || [];
+    const mergedLoans = [...existingLoans];
+    let conflictCount = 0;
+    incomingLoans.forEach(neu => {
+      // Konflikt = gleiche Kontonummer ODER gleicher Institut+Betrag
+      const conflict = existingLoans.find(d => 
+        (d.kontonummer && neu.kontonummer && d.kontonummer === neu.kontonummer) ||
+        (d.institut && neu.institut && d.institut === neu.institut && Math.abs((d.betrag||0) - (neu.betrag||0)) < 100)
+      );
+      if (conflict) { conflictCount++; } else { mergedLoans.push(neu); }
+    });
+    if (conflictCount > 0) {
+      const ok = window.confirm(`${conflictCount} Darlehen wirken wie schon vorhandene (gleiche Kontonr./gleicher Betrag). Trotzdem zusätzlich anlegen? (Abbrechen lässt nur die neuen, eindeutigen Darlehen)`);
+      if (ok) incomingLoans.forEach(neu => { if (!mergedLoans.includes(neu)) mergedLoans.push(neu); });
+    }
+    
+    // stammdaten.darlehen aufräumen falls dort fälschlich gelandet
+    delete updatedStammdaten.darlehen;
+    
     const updatedImmo = {
       ...existingImmo,
       importiert: true,
       zuPruefen: mergedFields,
+      darlehen: mergedLoans,
       stammdaten: updatedStammdaten,
     };
     
@@ -2333,6 +2371,7 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
       case 'nebenkostenabrechnung': return <IconWerbung color="#f59e0b" />;
       case 'grundbuch': return <IconObjekt color="#8b5cf6" />;
       case 'auflistung': return <IconList color="#06b6d4" />;
+      case 'teilungserklaerung': return <IconObjekt color="#8b5cf6" />;
       default: return <IconSteuer color="#6366f1" />;
     }
   };
@@ -2346,6 +2385,7 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
       nebenkostenabrechnung: 'Nebenkostenabrechnung',
       grundbuch: 'Grundbuchauszug',
       auflistung: 'Auflistung / Übersicht',
+      teilungserklaerung: 'Teilungserklärung (WEG)',
       sonstiges: 'Sonstiges Dokument'
     };
     return names[docType] || 'Dokument';
@@ -2513,7 +2553,7 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
             renderMergeView()
           ) : !parsedData ? (
             <>
-              {existingImmo && (
+              {existingImmo && (<>
                 <div className="import-target-info">
                   <span className="import-target-icon"><IconObjekt color="#6366f1" /></span>
                   <div>
@@ -2521,7 +2561,12 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
                     <span>{existingImmo.stammdaten.name}</span>
                   </div>
                 </div>
-              )}
+                {(existingImmo.darlehen?.length > 0 || existingEinheiten?.some(u => u.darlehen?.length > 0)) && (
+                  <div style={{padding:'10px 12px',marginBottom:'12px',background:'rgba(245,158,11,0.08)',border:'1px solid rgba(245,158,11,0.3)',borderRadius:'8px',fontSize:'12px',color:'var(--text)'}}>
+                    <b>⚠️ Bestehende Darlehen werden geschützt:</b> Neu importierte Darlehen werden zu den bestehenden <b>hinzugefügt</b>. Bei Konflikt fragt die App nach. Nichts wird stillschweigend überschrieben.
+                  </div>
+                )}
+              </>)}
               
               <div 
                 className={`upload-zone ${files.length > 0 ? 'has-file' : ''}`}
@@ -2595,6 +2640,7 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
                   <span><span className="doctype-icon"><IconWerbung color="#f59e0b" /></span>Nebenkostenabrechnung</span>
                   <span><span className="doctype-icon"><IconObjekt color="#8b5cf6" /></span>Grundbuchauszug</span>
                   <span><span className="doctype-icon"><IconList color="#06b6d4" /></span>Auflistung/Übersicht</span>
+                  <span><span className="doctype-icon"><IconObjekt color="#8b5cf6" /></span>Teilungserklärung</span>
                 </div>
               </div>
             </>
@@ -4209,7 +4255,7 @@ const exportSingleImmobilie = (p, c) => {
     <div class="summary-card"><div class="label">Rendite</div><div class="value">${fP$(c.rendite)}</div><div class="sub">Brutto</div></div>
     <div class="summary-card"><div class="label">Verbindlichkeiten</div><div class="value">${f$(restschuld)}</div><div class="sub">${darlehen.length} Darlehen</div></div>
     <div class="summary-card"><div class="label">AfA</div><div class="value">${f$(c.afaGes)}</div><div class="sub">pro Jahr</div></div>
-    <div class="summary-card"><div class="label">Fläche</div><div class="value">${s.wohnflaeche || 0} qm</div><div class="sub">${s.wohnflaeche > 0 ? f$(c.kp / s.wohnflaeche) + '/qm' : '—'}</div></div>
+    <div class="summary-card"><div class="label">Fläche</div><div class="value">${Number(s.wohnflaeche || 0).toLocaleString('de-DE', { maximumFractionDigits: 2 })} qm</div><div class="sub">${s.wohnflaeche > 0 ? f$(c.kp / s.wohnflaeche) + '/qm' : '—'}</div></div>
   </div>
 
   <div class="two-col">
@@ -4219,7 +4265,7 @@ const exportSingleImmobilie = (p, c) => {
       ${row('Nutzung', s.nutzung === 'vermietet' ? 'Vermietet' : 'Eigengenutzt')}
       ${row('Status', s.objektstatus === 'neubau' ? 'Neubau' : 'Bestand')}
       ${row('Bundesland', blName)}${row('Kaufdatum', fD$(s.kaufdatum))}${row('Baujahr', s.baujahr)}
-      ${row('Wohnungs-Nr.', s.wohnungsNr)}${row('Etage', s.etage)}${row('Vermietete Fläche', s.wohnflaeche ? s.wohnflaeche + ' qm' : null)}
+      ${row('Wohnungs-Nr.', s.wohnungsNr)}${row('Etage', s.etage)}${row('Vermietete Fläche', s.wohnflaeche ? Number(s.wohnflaeche).toLocaleString('de-DE', { maximumFractionDigits: 2 }) + ' qm' : null)}
     </table></div>
 
     <div class="section"><h2>Kaufpreis & Anschaffungskosten</h2><table>
@@ -4343,7 +4389,7 @@ const exportPortfolio = (filtered, totals, avgRendite) => {
       <td><b>${s.name || '—'}</b></td>
       <td><span class="badge badge-blue">${typLabel}</span></td>
       <td>${s.adresse || '—'}</td>
-      <td class="val">${i.wohnflaeche || 0} qm</td>
+      <td class="val">${Number(i.wohnflaeche || 0).toLocaleString('de-DE', { maximumFractionDigits: 2 })} qm</td>
       <td class="val">${f(i.kp)}</td>
       <td class="val pos">${f(i.jm)}</td>
       <td class="val">${fp(i.rendite)}</td>
@@ -4372,7 +4418,7 @@ const exportPortfolio = (filtered, totals, avgRendite) => {
       <div class="dl-item"><div class="lbl">Kaufpreis</div><div class="val">${f(i.kp)}</div></div>
       <div class="dl-item"><div class="lbl">Jahresmiete</div><div class="val pos">${f(i.jm)}</div></div>
       <div class="dl-item"><div class="lbl">Rendite</div><div class="val">${fp(i.rendite)}</div></div>
-      <div class="dl-item"><div class="lbl">Fläche</div><div class="val">${i.wohnflaeche || 0} qm</div></div>
+      <div class="dl-item"><div class="lbl">Fläche</div><div class="val">${Number(i.wohnflaeche || 0).toLocaleString('de-DE', { maximumFractionDigits: 2 })} qm</div></div>
       <div class="dl-item"><div class="lbl">Verbindlichkeiten</div><div class="val">${f(rs)}</div></div>
       <div class="dl-item"><div class="lbl">AfA/Jahr</div><div class="val">${f(i.afaGes)}</div></div>
       ${s.mieterName ? `<div class="dl-item"><div class="lbl">Mieter</div><div class="val">${s.mieterName}</div></div>` : ''}
@@ -7227,7 +7273,7 @@ const Dashboard = ({ immobilien, onSelectImmo, aktiveBeteiligte = [], beteiligte
           <div className="dtc-icon"><IconObjekt color="#8b5cf6" /></div>
           <div className="dtc-info">
             <span>Vermietete Fläche</span>
-            <b>{totals.qm.toLocaleString('de-DE')} qm</b>
+            <b>{Number(totals.qm).toLocaleString('de-DE', { maximumFractionDigits: 2 })} qm</b>
             <small>Ø {fmt(totals.kp / Math.max(totals.qm, 1))}/qm</small>
           </div>
         </div>
@@ -7572,7 +7618,7 @@ const Dashboard = ({ immobilien, onSelectImmo, aktiveBeteiligte = [], beteiligte
                   <small>{i.stammdaten.adresse || '–'}</small>
                 </td>
                 <td><span className="dash-tag" style={{ background: TYP_COLORS[i.stammdaten.typ]?.bg, borderColor: TYP_COLORS[i.stammdaten.typ]?.border, color: TYP_COLORS[i.stammdaten.typ]?.text }}>{getTypLabel(i.stammdaten.typ)}</span></td>
-                <td>{i.wohnflaeche} qm</td>
+                <td>{Number(i.wohnflaeche || 0).toLocaleString('de-DE', { maximumFractionDigits: 2 })} qm</td>
                 <td>{fmt(i.kp)}</td>
                 <td className="pos">{fmt(i.jm)}</td>
                 <td className="acc">{fmtP(i.rendite)}</td>
