@@ -4851,7 +4851,7 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
           )}
           {p.isContainer && einheiten.length > 0 && (
             <div style={{marginTop:'16px',paddingTop:'12px',borderTop:'1px solid var(--border)'}}>
-              <div style={{fontSize:'12px',fontWeight:'600',marginBottom:'8px'}}>🏠 Kaufpreis je Einheit ({einheiten.length})</div>
+              <div style={{fontSize:'12px',fontWeight:'600',marginBottom:'8px',display:'flex',alignItems:'center',gap:'6px'}}><span style={{width:'16px',height:'16px',display:'inline-flex'}}><IconHome color="#10b981" /></span>Kaufpreis je Einheit ({einheiten.length})</div>
               <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
                 {einheiten.map(u => {
                   const us = u.stammdaten || {};
@@ -4899,7 +4899,7 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
             </label>
             <label className="mietstatus-option">
               <input type="radio" name="erbbau" checked={!!s.erbbaurecht} onChange={() => set('erbbaurecht', true)} />
-              <span className="mietstatus-label">🏛 Erbbaurecht</span>
+              <span className="mietstatus-label" style={{display:'inline-flex',alignItems:'center',gap:'6px'}}><span style={{width:'18px',height:'18px'}}><IconBank color="#f59e0b" /></span>Erbbaurecht</span>
             </label>
           </div>
           {s.erbbaurecht && (<>
@@ -4908,8 +4908,20 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
             <p className="hint-small">Der Erbbauzins ist als Werbungskosten absetzbar. Da das Grundstück nicht im Eigentum ist, fließt kein Bodenwert-Anteil in die AfA-Basis – die gesamten Anschaffungskosten gelten als Gebäude.</p>
           </>)}
           <hr />
-          <Input label="Grundstücksgröße" value={s.grundstueckGroesse} onChange={v => set('grundstueckGroesse', v)} suffix="qm" />
-          {!s.erbbaurecht && <Input label="Bodenrichtwert" value={s.bodenrichtwert} onChange={v => set('bodenrichtwert', v)} suffix="€/qm" />}
+          {parentGebaeude ? (
+            <div style={{padding:'10px 12px',marginBottom:'10px',background:'rgba(99,102,241,0.06)',border:'1px solid rgba(99,102,241,0.18)',borderRadius:'8px',fontSize:'12px'}}>
+              <div style={{display:'flex',alignItems:'center',gap:'6px',marginBottom:'6px',fontWeight:600,color:'var(--text-muted)'}}><span style={{width:'14px',height:'14px',display:'inline-flex'}}><IconInfo color="#6366f1" /></span>Grundstück (vom Gebäude übernommen)</div>
+              <div style={{display:'flex',flexDirection:'column',gap:'3px',color:'var(--text-muted)'}}>
+                <div style={{display:'flex',justifyContent:'space-between'}}><span>Grundstücksgröße</span><span>{Number(parentGebaeude.stammdaten?.grundstueckGroesse || 0).toLocaleString('de-DE', { maximumFractionDigits: 2 })} qm</span></div>
+                <div style={{display:'flex',justifyContent:'space-between'}}><span>Bodenrichtwert</span><span>{fmt(parentGebaeude.stammdaten?.bodenrichtwert || 0)}/qm</span></div>
+                <div style={{display:'flex',justifyContent:'space-between'}}><span>Grundstückswert (gesamt)</span><span>{fmt((parentGebaeude.stammdaten?.grundstueckGroesse || 0) * (parentGebaeude.stammdaten?.bodenrichtwert || 0))}</span></div>
+              </div>
+              <p style={{margin:'8px 0 0',fontSize:'11px',color:'var(--text-dim)'}}>Werte pflegst du beim Gebäude. Dein Anteil ergibt sich aus dem TEA unten.</p>
+            </div>
+          ) : (<>
+            <Input label="Grundstücksgröße" value={s.grundstueckGroesse} onChange={v => set('grundstueckGroesse', v)} suffix="qm" />
+            {!s.erbbaurecht && <Input label="Bodenrichtwert" value={s.bodenrichtwert} onChange={v => set('bodenrichtwert', v)} suffix="€/qm" />}
+          </>)}
           {s.eigentumsart === 'weg' && !s.erbbaurecht && <Input label="TEA (WEG)" value={s.teileigentumsanteil} onChange={v => set('teileigentumsanteil', v)} suffix="/10.000" />}
           <div className="res"><span>Grundstückswert</span><span>{fmt(c.gwg)}</span></div>
           <div className="res"><span>./. Anteil</span><span>{fmt(c.ga)}</span></div>
@@ -4932,21 +4944,21 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
               const ga = us.erbbaurecht ? 0 : (us.eigentumsart === 'gesamt' ? gwg : (us.teileigentumsanteil > 0 ? (us.teileigentumsanteil / 10000) * gwg : 0));
               return ((kp + nk) - ga) * ((us.afaSatz || 3) / 100) + (us.degressiveAfa || 0);
             };
-            const sumFlaeche = einheiten.reduce((a, u) => a + ((u.stammdaten || {}).grundstueckGroesse || 0), 0);
+            const sumFlaeche = (p.stammdaten?.grundstueckGroesse || 0); // Grundstück hängt am Gebäude, nicht an Einheiten
             const sumAfa = einheiten.reduce((a, u) => a + unitAfa(u.stammdaten || {}), 0);
             const gebAfa = c.afaGeb + (s.degressiveAfa || 0);
             return (
               <div style={{marginTop:'16px',paddingTop:'12px',borderTop:'1px solid var(--border)'}}>
                 <div style={{padding:'12px',marginBottom:'10px',border:'1px solid #f59e0b',borderRadius:'8px',background:'rgba(245,158,11,0.06)'}}>
-                  <div style={{fontSize:'13px',fontWeight:'600',marginBottom:'8px'}}>📊 AfA gesamt</div>
+                  <div style={{fontSize:'13px',fontWeight:'600',marginBottom:'8px',display:'flex',alignItems:'center',gap:'6px'}}><span style={{width:'18px',height:'18px',display:'inline-flex'}}><IconChart color="#f59e0b" /></span>AfA gesamt</div>
                   <div style={{display:'flex',flexDirection:'column',gap:'4px',fontSize:'12px'}}>
                     <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>AfA/Jahr Einheiten</span><b>{fmt(sumAfa)}</b></div>
                     <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>AfA/Jahr Gebäude (gemeinsam)</span><b>{fmt(gebAfa)}</b></div>
                     <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>AfA/Jahr gesamt</span><b>{fmt(gebAfa + sumAfa)}</b></div>
-                    <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>Grundstücksfläche Einheiten</span><b>{Number(sumFlaeche).toLocaleString('de-DE', { maximumFractionDigits: 2 })} qm</b></div>
+                    <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>Grundstücksfläche (Gebäude)</span><b>{Number(sumFlaeche).toLocaleString('de-DE', { maximumFractionDigits: 2 })} qm</b></div>
                   </div>
                 </div>
-                <div style={{fontSize:'12px',fontWeight:'600',marginBottom:'8px'}}>🏠 Grundstück & AfA je Einheit ({einheiten.length})</div>
+                <div style={{fontSize:'12px',fontWeight:'600',marginBottom:'8px',display:'flex',alignItems:'center',gap:'6px'}}><span style={{width:'16px',height:'16px',display:'inline-flex'}}><IconHome color="#f59e0b" /></span>Grundstück & AfA je Einheit ({einheiten.length})</div>
                 <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
                   {einheiten.map(u => {
                     const us = u.stammdaten || {};
@@ -5000,14 +5012,14 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
             return (
               <div style={{marginTop:'16px',paddingTop:'12px',borderTop:'1px solid var(--border)'}}>
                 <div style={{padding:'12px',marginBottom:'10px',border:'1px solid #8b5cf6',borderRadius:'8px',background:'rgba(139,92,246,0.06)'}}>
-                  <div style={{fontSize:'13px',fontWeight:'600',marginBottom:'8px'}}>📊 Sonderausstattung der Einheiten gesamt</div>
+                  <div style={{fontSize:'13px',fontWeight:'600',marginBottom:'8px',display:'flex',alignItems:'center',gap:'6px'}}><span style={{width:'18px',height:'18px',display:'inline-flex'}}><IconChart color="#8b5cf6" /></span>Sonderausstattung der Einheiten gesamt</div>
                   <div style={{display:'flex',flexDirection:'column',gap:'4px',fontSize:'12px'}}>
                     <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>Positionen</span><b>{totalCount}</b></div>
                     <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>Wert gesamt</span><b>{fmt(totalSum)}</b></div>
                     <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'var(--text-muted)'}}>AfA SA p.a. (10%)</span><b>{fmt(totalSum * 0.1)}</b></div>
                   </div>
                 </div>
-                <div style={{fontSize:'12px',fontWeight:'600',marginBottom:'8px'}}>🏠 Sonderausstattung je Einheit ({einheiten.length})</div>
+                <div style={{fontSize:'12px',fontWeight:'600',marginBottom:'8px',display:'flex',alignItems:'center',gap:'6px'}}><span style={{width:'16px',height:'16px',display:'inline-flex'}}><IconHome color="#8b5cf6" /></span>Sonderausstattung je Einheit ({einheiten.length})</div>
                 <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
                   {einheiten.map(u => {
                     const us = u.stammdaten || {};
@@ -5057,7 +5069,7 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
         >
           {p.isContainer && einheiten.length > 0 && (
             <div style={{marginBottom:'14px'}}>
-              <div style={{fontSize:'12px',fontWeight:'600',marginBottom:'8px'}}>🏠 Miete je Einheit ({einheiten.length})</div>
+              <div style={{fontSize:'12px',fontWeight:'600',marginBottom:'8px',display:'flex',alignItems:'center',gap:'6px'}}><span style={{width:'16px',height:'16px',display:'inline-flex'}}><IconHome color="#ec4899" /></span>Miete je Einheit ({einheiten.length})</div>
               <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
                 {einheiten.map(u => {
                   const us = u.stammdaten || {};
@@ -5438,7 +5450,7 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
             const sumRest = allLoans.reduce((a, d) => a + (d.restschuld || d.betrag || 0), 0);
             return (
               <div style={{padding:'12px',marginBottom:'14px',border:'1px solid #3b82f6',borderRadius:'8px',background:'rgba(59,130,246,0.06)'}}>
-                <div style={{fontSize:'13px',fontWeight:'600',marginBottom:'8px'}}>📊 Finanzierung gesamt ({allLoans.length} Darlehen)</div>
+                <div style={{fontSize:'13px',fontWeight:'600',marginBottom:'8px',display:'flex',alignItems:'center',gap:'6px'}}><span style={{width:'18px',height:'18px',display:'inline-flex'}}><IconChart color="#3b82f6" /></span>Finanzierung gesamt ({allLoans.length} Darlehen)</div>
                 <div style={{display:'flex',gap:'6px',marginBottom:'10px'}}>
                   <label style={{flex:1,display:'flex',alignItems:'center',gap:'6px',padding:'7px 9px',fontSize:'11px',borderRadius:'6px',cursor:'pointer',border:`1px solid ${darlehenModus==='objekt'?'#3b82f6':'var(--border)'}`,background:darlehenModus==='objekt'?'rgba(59,130,246,0.12)':'transparent'}}>
                     <input type="radio" name="dl-modus" checked={darlehenModus==='objekt'} onChange={() => upd({...p, darlehenModus:'objekt'})} style={{accentColor:'#3b82f6'}}/>Ein Darlehen fürs Objekt
@@ -5846,7 +5858,7 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
                 <div style={{padding:'8px 12px',marginBottom:'10px',background:'rgba(139,92,246,0.08)',borderRadius:'6px',fontSize:'11px',color:'var(--text-muted)'}}>
                   ℹ️ Oben am Gebäude erfasste Beteiligte gelten <b>gemeinsam fürs ganze Gebäude</b>. Ist die Beteiligung <b>je Einheit</b> unterschiedlich (Regelfall), pflegst du sie in der jeweiligen Wohnung.
                 </div>
-                <div style={{fontSize:'12px',fontWeight:'600',marginBottom:'8px'}}>🏠 Beteiligte je Einheit ({einheiten.length})</div>
+                <div style={{fontSize:'12px',fontWeight:'600',marginBottom:'8px',display:'flex',alignItems:'center',gap:'6px'}}><span style={{width:'16px',height:'16px',display:'inline-flex'}}><IconHome color="#8b5cf6" /></span>Beteiligte je Einheit ({einheiten.length})</div>
                 <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
                   {einheiten.map(u => {
                     const us = u.stammdaten || {};
@@ -6040,7 +6052,7 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
           <button className="btn-add" onClick={() => upd({ ...p, dokumente: [...(p.dokumente || []), { name: '', url: '', typ: 'sonstige' }] })}>+ Link hinzufügen</button>
           {p.isContainer && einheiten.length > 0 && (
             <div style={{marginTop:'16px',paddingTop:'12px',borderTop:'1px solid var(--border)'}}>
-              <div style={{fontSize:'12px',fontWeight:'600',marginBottom:'8px'}}>🏠 Dokumente je Einheit ({einheiten.length})</div>
+              <div style={{fontSize:'12px',fontWeight:'600',marginBottom:'8px',display:'flex',alignItems:'center',gap:'6px'}}><span style={{width:'16px',height:'16px',display:'inline-flex'}}><IconHome color="#f97316" /></span>Dokumente je Einheit ({einheiten.length})</div>
               <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
                 {einheiten.map(u => {
                   const us = u.stammdaten || {};
@@ -7851,7 +7863,25 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
   };
 
   const isSaved = curr?.saved === true;
-  const _cBase = useCalc(curr?.stammdaten);
+  const effectiveStammdaten = useMemo(() => {
+    if (!curr) return null;
+    // Einheit erbt Grundstück + Erbbaurecht vom Gebäude (gehört dort hin)
+    if (curr.parentId) {
+      const parent = (saved || []).find(x => x.id === curr.parentId);
+      if (parent?.stammdaten) {
+        return {
+          ...curr.stammdaten,
+          grundstueckGroesse: parent.stammdaten.grundstueckGroesse || 0,
+          bodenrichtwert: parent.stammdaten.bodenrichtwert || 0,
+          erbbaurecht: parent.stammdaten.erbbaurecht || curr.stammdaten.erbbaurecht,
+          erbbauzins: parent.stammdaten.erbbauzins || curr.stammdaten.erbbauzins,
+          erbbauLaufzeitEnde: parent.stammdaten.erbbauLaufzeitEnde || curr.stammdaten.erbbauLaufzeitEnde,
+        };
+      }
+    }
+    return curr.stammdaten;
+  }, [curr, saved]);
+  const _cBase = useCalc(effectiveStammdaten);
   const c = useMemo(() => {
     if (!curr?.isContainer) return _cBase;
     const kids = (saved || []).filter(x => x.parentId === curr.id);
