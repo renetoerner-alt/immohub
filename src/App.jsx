@@ -1819,6 +1819,13 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
 
   const addFiles = (newOnes) => {
     if (!newOnes || newOnes.length === 0) return;
+    // Vor-Upload-Check: PDFs > 4 MB / Bilder > 4 MB
+    const tooLarge = newOnes.filter(f => f.size > 4 * 1024 * 1024);
+    if (tooLarge.length > 0) {
+      const msg = tooLarge.map(f => `• ${f.name}: ${(f.size / 1024 / 1024).toFixed(1)} MB`).join('\n');
+      setError(`Zu große Datei(en) – Server-Limit ist ~4 MB:\n${msg}\n\nLösung: PDF in macOS Vorschau öffnen → Ablage → Exportieren → Filter „Reduce File Size" wählen → erneut hochladen. Alternativ nur die relevanten Seiten extrahieren.`);
+      // Trotzdem zur Liste hinzufügen, damit User die Größe sieht — aber Hinweis bleibt sichtbar
+    }
     const wasEmpty = files.length === 0;
     setFiles(prev => [...prev, ...newOnes]);
     if (wasEmpty) {
@@ -1901,6 +1908,9 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
       body: JSON.stringify({ image: base64, mimeType: mediaType, systemPrompt: fullPrompt })
     });
     if (!response.ok) {
+      if (response.status === 413) {
+        throw new Error(`Datei zu groß für den Server (max. ~4 MB pro Datei). Die Datei "${filename}" hat ${(base64.length / 1024 / 1024 * 0.75).toFixed(1)} MB. Lösungen: 1) PDF in macOS Vorschau öffnen → Ablage → Exportieren → Filter "Reduce File Size". 2) Nur die relevanten Seiten extrahieren (z.B. Aufteilungsplan + Anteilstabelle). 3) Bei mehrseitigen PDFs in mehrere kleinere PDFs aufteilen.`);
+      }
       const errData = await response.json().catch(() => ({}));
       throw new Error(errData.error || `API Fehler: ${response.status}`);
     }
@@ -2609,7 +2619,7 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
                          (i + 1)}
                       </span>
                       <span className="file-name">{f.name}</span>
-                      <span className="file-size">{(f.size / 1024).toFixed(0)} KB</span>
+                      <span className="file-size" style={f.size > 4*1024*1024 ? {color:'#ef4444',fontWeight:600} : {}}>{(f.size / 1024 / 1024).toFixed(1)} MB{f.size > 4*1024*1024 ? ' ⚠️ zu groß' : ''}</span>
                     </div>
                   ))}
                   <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:'6px',padding:'0 2px'}}>
@@ -4949,8 +4959,9 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
                         </div>
                         {open && (
                           <div style={{padding:'10px 12px',borderTop:'1px solid var(--border)'}}>
-                            <Input label="Grundstücksgröße" value={us.grundstueckGroesse} onChange={v => onUpdateUnit && onUpdateUnit(u.id, { grundstueckGroesse: v })} suffix="qm" />
-                            <Input label="Bodenrichtwert" value={us.bodenrichtwert} onChange={v => onUpdateUnit && onUpdateUnit(u.id, { bodenrichtwert: v })} suffix="€/qm" />
+                            <div style={{padding:'8px 12px',marginBottom:'10px',background:'rgba(99,102,241,0.06)',border:'1px solid rgba(99,102,241,0.18)',borderRadius:'6px',fontSize:'11px',color:'var(--text-muted)'}}>
+                              ℹ️ Grundstücksgröße und Bodenrichtwert werden am <b>Gebäude</b> gepflegt — das Grundstück gehört zum Gesamtobjekt. Die einzelne Wohnung hat nur ihren <b>Teileigentumsanteil</b> daran (im Objekt-Bereich der Einheit).
+                            </div>
                             <Input label="AfA-Satz (linear)" value={us.afaSatz} onChange={v => onUpdateUnit && onUpdateUnit(u.id, { afaSatz: v })} suffix="%" step={0.5} />
                             <div className="res hl"><span>Lineare AfA p.a.</span><span>{fmt(unitAfa(us))}</span></div>
                             <div style={{marginTop:'8px'}}><button onClick={() => onSelectEinheit && onSelectEinheit(u)} style={{padding:'5px 10px',background:'transparent',color:'#f59e0b',border:'1px solid #f59e0b',borderRadius:'6px',fontSize:'11px',cursor:'pointer'}}>Komplette Einheit öffnen →</button></div>
