@@ -2405,7 +2405,7 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
     const names = {
       name: 'Name', adresse: 'Adresse', typ: 'Typ', objektstatus: 'Status',
       nutzung: 'Nutzung', eigentuemer: 'Eigentümer', mieterName: 'Mieter',
-      bundesland: 'Bundesland', kaufdatum: 'Kaufdatum', baujahr: 'Baujahr',
+      bundesland: 'Bundesland', kaufdatum: 'Kaufdatum', fertigstellungsdatum: 'Fertigstellung', baujahr: 'Baujahr',
       wohnungsNr: 'Wohnungs-Nr.', etage: 'Etage',
       verkehrswert: 'Verkehrswert', verkehrswertDatum: 'Bewertungsdatum',
       kaufpreisImmobilie: 'Kaufpreis', kaufpreisStellplatz: 'Stellplatz-Preis',
@@ -4716,11 +4716,27 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
             <Input label="Kaufdatum" value={s.kaufdatum} onChange={v => set('kaufdatum', v)} type="date" />
             <Input label="Baujahr" value={s.baujahr} onChange={v => set('baujahr', v)} type="year" />
           </div>
-          <div className="field-row-2">
-            <Input label="Wohnungs-Nr." value={s.wohnungsNr} onChange={v => set('wohnungsNr', v)} type="text" ph="z.B. 12" />
-            <Input label="Etage" value={s.etage} onChange={v => set('etage', v)} type="text" ph="z.B. 3. OG" />
-          </div>
-          <Input label="Vermietete Fläche" value={s.wohnflaeche} onChange={v => set('wohnflaeche', v)} suffix="qm" step={0.5} />
+          {!p.isContainer && (
+            <div className="field-row-2">
+              <Input label="Wohnungs-Nr." value={s.wohnungsNr} onChange={v => set('wohnungsNr', v)} type="text" ph="z.B. 12" />
+              <Input label="Etage" value={s.etage} onChange={v => set('etage', v)} type="text" ph="z.B. 3. OG" />
+            </div>
+          )}
+          {p.isContainer && einheiten.length > 0 ? (() => {
+            const sumFlaeche = einheiten.reduce((a, u) => a + ((u.stammdaten || {}).wohnflaeche || 0), 0);
+            return (
+              <div className="irow">
+                <label>Vermietete Fläche</label>
+                <div style={{display:'flex',alignItems:'center',gap:'8px',flex:1,justifyContent:'flex-end'}}>
+                  <span style={{fontSize:'13px',fontFamily:"'JetBrains Mono',monospace"}}>{Number(sumFlaeche).toLocaleString('de-DE', { maximumFractionDigits: 2 })}</span>
+                  <span style={{fontSize:'11px',color:'var(--text-dim)'}}>qm</span>
+                  <span style={{fontSize:'10px',color:'var(--text-dim)',padding:'2px 6px',background:'rgba(99,102,241,0.1)',borderRadius:'4px'}}>Σ {einheiten.length} Einheit{einheiten.length !== 1 ? 'en' : ''}</span>
+                </div>
+              </div>
+            );
+          })() : (
+            <Input label="Vermietete Fläche" value={s.wohnflaeche} onChange={v => set('wohnflaeche', v)} suffix="qm" step={0.5} />
+          )}
           {!p.isContainer && <Select label="Eigentumsart" value={s.eigentumsart || 'weg'} onChange={v => set('eigentumsart', v)} options={[{ v: 'weg', l: 'WEG / Teileigentum (aufgeteilt)' }, { v: 'gesamt', l: 'Gesamteigentum (nicht aufgeteilt)' }]} />}
           {!p.isContainer && s.eigentumsart === 'gesamt' && <p className="hint-small">Gesamteigentum = ganzes Gebäude in einem Grundbuchblatt, kein Miteigentumsanteil pro Wohnung. Kein TEA, AfA-Basis ohne Teileigentumsanteil.</p>}
           <hr />
@@ -6256,6 +6272,7 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
                       nutzung: 'vermietet',
                       bundesland: 'hessen',
                       kaufdatum: '',
+                      fertigstellungsdatum: '',
                       baujahr: 0,
                       wohnungsNr: '',
                       etage: ''
