@@ -1152,7 +1152,7 @@ const Input = ({ label, value, onChange, suffix, step = 1, type = 'number', ph, 
   const isYear = type === 'year';
   const isNumber = type === 'number';
   const [displayValue, setDisplayValue] = useState(
-    isNumber && value ? formatNumber(value) : 
+    isNumber && (value !== '' && value !== null && value !== undefined) ? formatNumber(value) : 
     isYear && value ? String(value) : 
     (value || '')
   );
@@ -1162,7 +1162,9 @@ const Input = ({ label, value, onChange, suffix, step = 1, type = 'number', ph, 
   React.useEffect(() => {
     if (!isFocused) {
       if (isNumber) {
-        setDisplayValue(value ? formatNumber(value) : '');
+        // Wirklich leer (undefined/null/'') → ''; alle Zahlen (auch 0) sichtbar formatieren
+        const isEmpty = value === '' || value === null || value === undefined;
+        setDisplayValue(isEmpty ? '' : formatNumber(value));
       } else if (isYear) {
         setDisplayValue(value ? String(value) : '');
       } else {
@@ -1177,7 +1179,8 @@ const Input = ({ label, value, onChange, suffix, step = 1, type = 'number', ph, 
       // Erlaube nur Zahlen, Punkte und Kommas während der Eingabe
       const sanitized = inputVal.replace(/[^0-9.,\-]/g, '');
       setDisplayValue(sanitized);
-      onChange(parseNumber(sanitized));
+      // Leerer String → leer; '0' → 0; alles andere → number
+      onChange(sanitized === '' ? '' : parseNumber(sanitized));
     } else if (isYear) {
       // Nur Zahlen für Jahr, keine Formatierung
       const sanitized = inputVal.replace(/[^0-9]/g, '');
@@ -1192,19 +1195,23 @@ const Input = ({ label, value, onChange, suffix, step = 1, type = 'number', ph, 
   const handleBlur = () => {
     setIsFocused(false);
     if (isNumber) {
-      // Beim Verlassen formatieren
-      const num = parseNumber(displayValue);
-      setDisplayValue(num ? formatNumber(num) : '');
+      // Leer bleibt leer; Zahlen (auch 0) werden formatiert angezeigt
+      if (displayValue === '') {
+        setDisplayValue('');
+      } else {
+        const num = parseNumber(displayValue);
+        setDisplayValue(formatNumber(num));
+      }
     }
     // Jahr wird nicht formatiert
   };
   
   const handleFocus = () => {
     setIsFocused(true);
-    if (isNumber && displayValue) {
-      // Beim Fokus die Rohzahl zeigen (ohne Tausender-Trennung, aber mit Komma als Dezimal)
+    if (isNumber && displayValue !== '') {
+      // Beim Fokus die Rohzahl zeigen (auch '0' wird zu '0', nicht weg)
       const num = parseNumber(displayValue);
-      setDisplayValue(num ? num.toString().replace('.', ',') : '');
+      setDisplayValue(num.toString().replace('.', ','));
     }
     // Jahr bleibt unverändert
   };
@@ -4714,8 +4721,9 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
           </div>
           <div className="field-row-2">
             <Input label="Kaufdatum" value={s.kaufdatum} onChange={v => set('kaufdatum', v)} type="date" />
-            <Input label="Baujahr" value={s.baujahr} onChange={v => set('baujahr', v)} type="year" />
+            <Input label="Fertigstellung" value={s.fertigstellungsdatum} onChange={v => set('fertigstellungsdatum', v)} type="date" />
           </div>
+          <Input label="Baujahr" value={s.baujahr} onChange={v => set('baujahr', v)} type="year" />
           {!p.isContainer && (
             <div className="field-row-2">
               <Input label="Wohnungs-Nr." value={s.wohnungsNr} onChange={v => set('wohnungsNr', v)} type="text" ph="z.B. 12" />
