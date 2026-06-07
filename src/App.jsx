@@ -7856,7 +7856,14 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
     if (!curr?.isContainer) return _cBase;
     const kids = (saved || []).filter(x => x.parentId === curr.id);
     const agg = cmAgg(curr, kids);
-    return { ..._cBase, kp: agg.kp, nk: agg.nk, ak: agg.ak, jm: agg.jm, mm: agg.mm, rendite: agg.rendite, kaufpreisfaktor: agg.kaufpreisfaktor, afaGeb: agg.afaGeb, afaSA: agg.afaSA, afaGes: agg.afaGes, fk: agg.fk, gwg: 0, ga: 0, saSumme: agg.saSumme };
+    // Grundstück (gwg/ga) und AfA-Basis kommen vom GEBÄUDE-Stammdatum:
+    // - Grundstück hängt ans Gebäude (ein Grundbuchblatt fürs Grundstück)
+    // - Wohnungen haben nur einen Teileigentumsanteil daran (steckt im jeweiligen unit.stammdaten.teileigentumsanteil)
+    const gs = curr.stammdaten || {};
+    const gwgGeb = (gs.grundstueckGroesse || 0) * (gs.bodenrichtwert || 0);
+    // Beim Container ist ga = voller Grundstückswert (das Grundstück ist 100% am Gebäude), wird über die Einheiten via TEA verteilt
+    const gaGeb = gs.erbbaurecht ? 0 : gwgGeb;
+    return { ..._cBase, kp: agg.kp, nk: agg.nk, ak: agg.ak, jm: agg.jm, mm: agg.mm, rendite: agg.rendite, kaufpreisfaktor: agg.kaufpreisfaktor, afaGeb: agg.afaGeb, afaSA: agg.afaSA, afaGes: agg.afaGes, fk: agg.fk, gwg: gwgGeb, ga: gaGeb, afaBasis: Math.max(0, agg.ak - gaGeb), saSumme: agg.saSumme };
   }, [_cBase, curr, saved]);
 
   const onNew = () => { 
