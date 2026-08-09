@@ -14,7 +14,7 @@ export default async function handler(req, res) {
   // CORS Headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
@@ -22,6 +22,26 @@ export default async function handler(req, res) {
 
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  // --- Auth-Prüfung: nur angemeldete ImmoHub-Nutzer dürfen die KI-Analyse nutzen ---
+  // (vorher war die Function ein offener Proxy: jeder mit der URL konnte auf
+  // Kosten des ANTHROPIC_API_KEY Anfragen stellen)
+  const SUPABASE_URL = 'https://gcotfldbnuatkewauvhv.supabase.co';
+  const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imdjb3RmbGRibnVhdGtld2F1dmh2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkzNzM5ODgsImV4cCI6MjA4NDk0OTk4OH0.OvK6e9owY_zRKsxkcAEHcuVRlcMUvmrMOVez_hmuTcM';
+  const authToken = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  if (!authToken) {
+    return res.status(401).json({ error: 'Nicht angemeldet – bitte in ImmoHub einloggen.' });
+  }
+  try {
+    const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+      headers: { 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${authToken}` },
+    });
+    if (!userRes.ok) {
+      return res.status(401).json({ error: 'Sitzung abgelaufen – bitte neu anmelden.' });
+    }
+  } catch (e) {
+    return res.status(500).json({ error: 'Auth-Prüfung fehlgeschlagen' });
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
