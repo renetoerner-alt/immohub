@@ -5,14 +5,63 @@ import React, { useState, useMemo, useEffect, useRef, createContext, useContext 
 // ============================================================================
 const SUPABASE_URL = 'https://gcotfldbnuatkewauvhv.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imdjb3RmbGRibnVhdGtld2F1dmh2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkzNzM5ODgsImV4cCI6MjA4NDk0OTk4OH0.OvK6e9owY_zRKsxkcAEHcuVRlcMUvmrMOVez_hmuTcM';
-const FIRST_USER_EMAIL = 'renetoerner@gmail.com';
+// --- Token-Refresh: erneuert bei 401 einmalig das Access-Token über den Refresh-Token ---
+let _refreshPromise = null;
+const refreshSession = async () => {
+  if (_refreshPromise) return _refreshPromise; // parallele 401s teilen sich einen Refresh
+  _refreshPromise = (async () => {
+    try {
+      const refreshToken = localStorage.getItem('sb_refresh_token');
+      if (!refreshToken) return false;
+      const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.access_token) {
+        // Refresh-Token endgültig ungültig (rotiert/widerrufen): Tokens räumen,
+        // damit die App nicht endlos mit toter Session weiterarbeitet
+        if (res.status === 400 || res.status === 401) {
+          localStorage.removeItem('sb_access_token');
+          localStorage.removeItem('sb_refresh_token');
+        }
+        return false;
+      }
+      localStorage.setItem('sb_access_token', data.access_token);
+      if (data.refresh_token) localStorage.setItem('sb_refresh_token', data.refresh_token);
+      if (data.user) localStorage.setItem('sb_user', JSON.stringify(data.user));
+      return true;
+    } catch { return false; }
+  })();
+  const ok = await _refreshPromise;
+  _refreshPromise = null;
+  return ok;
+};
+
+// Fetch mit Auth-Header; bei 401 wird das Token einmal erneuert und der Request wiederholt
+const authedFetch = async (url, options = {}) => {
+  const doFetch = () => fetch(url, {
+    ...options,
+    headers: { ...(options.headers || {}), 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${localStorage.getItem('sb_access_token')}` },
+  });
+  let res = await doFetch();
+  if (res.status === 401) {
+    const refreshed = await refreshSession();
+    if (refreshed) res = await doFetch();
+  }
+  return res;
+};
 
 const supabase = {
   auth: {
     getSession: async () => {
       const token = localStorage.getItem('sb_access_token');
-      const user = localStorage.getItem('sb_user');
-      if (token && user) return { data: { session: { access_token: token, user: JSON.parse(user) } }, error: null };
+      const userRaw = localStorage.getItem('sb_user');
+      if (token && userRaw) {
+        try { return { data: { session: { access_token: token, user: JSON.parse(userRaw) } }, error: null }; }
+        catch { localStorage.removeItem('sb_access_token'); localStorage.removeItem('sb_refresh_token'); localStorage.removeItem('sb_user'); }
+      }
       return { data: { session: null }, error: null };
     },
     signUp: async ({ email, password }) => {
@@ -75,12 +124,10 @@ const supabase = {
       eq: (col, val) => ({
         single: async () => {
           try {
-            const token = localStorage.getItem('sb_access_token');
-            const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?select=${cols}&${col}=eq.${val}&limit=1`, {
-              headers: { 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${token}` },
-            });
+            const res = await authedFetch(`${SUPABASE_URL}/rest/v1/${table}?select=${cols}&${col}=eq.${encodeURIComponent(val)}&limit=1`);
             const data = await res.json();
-            return { data: data[0] || null, error: null };
+            if (!res.ok) return { data: null, error: { message: data.message || `HTTP ${res.status}`, status: res.status } };
+            return { data: (Array.isArray(data) && data[0]) || null, error: null };
           } catch (err) { return { data: null, error: err }; }
         },
       }),
@@ -89,14 +136,13 @@ const supabase = {
       select: () => ({
         single: async () => {
           try {
-            const token = localStorage.getItem('sb_access_token');
-            const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+            const res = await authedFetch(`${SUPABASE_URL}/rest/v1/${table}`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${token}`, 'Prefer': 'return=representation' },
+              headers: { 'Content-Type': 'application/json', 'Prefer': 'return=representation' },
               body: JSON.stringify(rows),
             });
             const data = await res.json();
-            if (!res.ok) return { data: null, error: { message: data.message || 'Insert failed' } };
+            if (!res.ok) return { data: null, error: { message: data.message || `Insert fehlgeschlagen (HTTP ${res.status})`, status: res.status } };
             return { data: Array.isArray(data) ? data[0] : data, error: null };
           } catch (err) { return { data: null, error: err }; }
         },
@@ -107,15 +153,17 @@ const supabase = {
         select: () => ({
           single: async () => {
             try {
-              const token = localStorage.getItem('sb_access_token');
-              const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${col}=eq.${val}`, {
+              const res = await authedFetch(`${SUPABASE_URL}/rest/v1/${table}?${col}=eq.${encodeURIComponent(val)}`, {
                 method: 'PATCH',
-                headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${token}`, 'Prefer': 'return=representation' },
+                headers: { 'Content-Type': 'application/json', 'Prefer': 'return=representation' },
                 body: JSON.stringify(updates),
               });
               const data = await res.json();
-              if (!res.ok) return { data: null, error: { message: data.message || 'Update failed' } };
-              return { data: Array.isArray(data) ? data[0] : data, error: null };
+              if (!res.ok) return { data: null, error: { message: data.message || `Update fehlgeschlagen (HTTP ${res.status})`, status: res.status } };
+              const row = Array.isArray(data) ? data[0] : data;
+              // 0 aktualisierte Zeilen = Datensatz existiert nicht (mehr) oder keine Berechtigung → als Fehler melden statt still "ok"
+              if (!row) return { data: null, error: { message: 'Kein Datensatz aktualisiert' } };
+              return { data: row, error: null };
             } catch (err) { return { data: null, error: err }; }
           },
         }),
@@ -139,6 +187,25 @@ const AuthProvider = ({ children }) => {
       setUser(session?.user || null);
       setLoading(false);
     });
+  }, []);
+
+  // Session-Sync zwischen Tabs: Logout/Login in einem anderen Tab hier nachziehen,
+  // sonst arbeitet dieser Tab mit toten Tokens weiter und Saves scheitern still
+  useEffect(() => {
+    const onStorage = (e) => {
+      if (e.key === 'sb_access_token' && e.newValue === null) setUser(null);
+      if (e.key === 'sb_user' && e.newValue) {
+        // Nur bei ECHTEM User-Wechsel updaten: ein Token-Refresh in einem anderen Tab
+        // schreibt sb_user neu — eine neue Objekt-Referenz würde hier loadPortfolio
+        // auslösen und die App remounten (ungespeicherte Eingaben weg)
+        try {
+          const parsed = JSON.parse(e.newValue);
+          setUser(prev => (prev && parsed && prev.id === parsed.id) ? prev : parsed);
+        } catch { /* ignorieren */ }
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
   }, []);
 
   const signUp = async (email, password) => {
@@ -396,7 +463,7 @@ const generateExport = (data, containerRef) => {
   <div class="section">
     <h2>Mieteinnahmen</h2>
     <table>
-      <tr><td>Wohnfläche</td><td class="val">${s.wohnflaeche} qm</td><td class="note">× ${f(s.mieteProQm)}/qm</td></tr>
+      <tr><td>Wohnfläche</td><td class="val">${s.wohnflaeche} qm</td><td class="note">Kaltmiete ${f(s.kaltmiete || (s.wohnflaeche * (s.mieteProQm || 0)))}/Monat</td></tr>
       ${s.anzahlStellplaetze > 0 ? `<tr><td>Stellplätze</td><td class="val">${s.anzahlStellplaetze} Stck.</td><td class="note">× ${f(s.mieteStellplatz)}/Monat</td></tr>` : ''}
       <tr class="hl"><td><b>Miete pro Monat</b></td><td class="val"><b>${f(c.mm)}</b></td><td></td></tr>
       <tr class="hl"><td><b>Jahres-Kaltmiete</b></td><td class="val"><b>${f(c.jm)}</b></td><td></td></tr>
@@ -914,12 +981,13 @@ const createEmpty = () => ({
   notizen: '', // Freitext-Notizen
   dokumente: [], // Array von { name, url, typ }
   beteiligungen: [], // Array von { beteiligterID, anteil }
-  darlehen: [], // Array von { name, betrag, zinssatz, tilgung, abschluss, zinsbindungEnde, typ }
-  miethistorie: [], // Array von { datum, mieteAlt, mieteNeu, grund }
+  darlehen: [], // Array von { name, institut, betrag, restschuld, zinssatz, effektivzins, tilgung, monatsrate, sondertilgung, abschluss, ersteRate, laufzeit, zinsbindungJahre, zinsbindungEnde, kontonummer }
+  miethistorie: [], // Array von { mieter, von, bis, kaltmiete, nebenkosten, stellplatz, sonstiges, grund }
   erinnerungen: [], // Array von { datum, titel, beschreibung, erledigt }
   // === Hierarchie (Hybrid-Modell, eingeführt v7.7) ===
   isContainer: false, // true = Gebäude (z.B. MFH) mit Einheiten darunter
   parentId: null,     // null = eigenständig oder Container; sonst ID des übergeordneten Gebäudes
+  darlehenModus: 'objekt', // 'objekt' = ein Darlehen fürs ganze Objekt/Gebäude | 'einheit' = Darlehen je Einheit
   stammdaten: {
     name: '', adresse: '', projekt: '', typ: 'etw', bundesland: 'hessen',
     objektstatus: 'neubau',
@@ -946,7 +1014,7 @@ const createEmpty = () => ({
     kautionErhalten: false, // Kaution wurde erhalten
     kautionZurueckgezahlt: false, // Kaution wurde zurückgezahlt
     maklerProvision: 0, notarkosten: 0, grunderwerbsteuer: 0, mehrkosten: 0,
-    afaSatz: 3, degressiveAfa: 0, baujahr: 2020,
+    afaSatz: 3, degressiveAfa: 0,
     // Eigenkapital-Details
     eigenkapitalAnteil: 20, 
     eigenkapitalBetrag: 0,
@@ -984,10 +1052,30 @@ const createEmpty = () => ({
   steuerJahre: {},
 });
 
-const STORAGE_KEY = 'immocalc_v4';
-const load = () => { try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; } catch { return []; } };
-const save = (d) => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); } catch {} };
+// Migration: füllt bei Altdatensätzen alle seit ihrer Erstellung neu hinzugekommenen
+// Felder mit den Defaults aus createEmpty() auf (flach + stammdaten), damit nirgends
+// undefined/NaN entsteht. Bestehende Werte werden nie überschrieben.
+const migrateImmo = (i) => {
+  if (!i) return i;
+  const base = createEmpty();
+  return { ...base, ...i, stammdaten: { ...base.stammdaten, ...(i.stammdaten || {}) } };
+};
 
+// ============================================================================
+// GLOSSAR der Kurznamen (wichtig für jede Weiterentwicklung!):
+//   p    = aktuelle Immobilie (kompletter Datensatz inkl. stammdaten, darlehen, ...)
+//   s    = p.stammdaten
+//   upd  = Update-Callback: upd({...p, ...}) schreibt den Datensatz in curr (+ Auto-Save)
+//   c    = useCalc(s)-Ergebnis (berechnete Kennzahlen der Einzel-Immobilie)
+//   cc   = Container-Aggregat (cmAgg) bei Gebäuden, sonst = c
+//   agg  = cmAgg-Resultat im Dashboard
+//   kp   = Kaufpreis | nk = Kaufnebenkosten | ak = Anschaffungskosten (kp+nk)
+//   jm   = Jahres-Kaltmiete | mm = Monats-Kaltmiete
+//   fk   = Fremdkapital (Restschuld) | rate = monatliche Darlehensrate
+//   gwg  = Grundstückswert gesamt | ga = Grundstücksanteil (Bodenwert-Abzug für AfA)
+//   afaGeb/afaSA/afaGes = AfA Gebäude / Sonderausstattung / gesamt
+//   TEA  = Teileigentumsanteil (x/10.000)
+// ============================================================================
 const useCalc = (s) => useMemo(() => {
   if (!s) return {};
   const kp = (s.kaufpreisImmobilie || 0) + (s.mehrkosten || 0) + (s.kaufpreisStellplatz || 0);
@@ -1007,21 +1095,31 @@ const useCalc = (s) => useMemo(() => {
   return { kp, nk, ak, gwg, ga, afaBasis, afaGeb, saSumme, afaSA, afaGes: afaGeb + afaSA, jm, mm: jm / 12, rendite: kp > 0 ? jm / kp : 0, kaufpreisfaktor, erbbauzinsWK };
 }, [s]);
 
+// Parse formatierte Zahl (deutsches Format). Sonderfall: ein einzelner Punkt mit
+// max. 2 Nachkommastellen wird als DEZIMALtrenner gelesen ("3.5" → 3,5 — Nummernblock!),
+// sonst gelten Punkte als Tausendertrenner ("1.500" → 1500, "1.234.567" → 1234567).
+const parseNumber = (str) => {
+  if (!str || str === '') return 0;
+  let cleaned = str.toString();
+  if (cleaned.includes(',')) {
+    cleaned = cleaned.replace(/\./g, '').replace(',', '.');
+  } else {
+    const dots = (cleaned.match(/\./g) || []).length;
+    const afterDot = cleaned.split('.').pop();
+    if (!(dots === 1 && afterDot.length > 0 && afterDot.length <= 2)) {
+      cleaned = cleaned.replace(/\./g, '');
+    }
+  }
+  const num = parseFloat(cleaned);
+  return isNaN(num) ? 0 : num;
+};
+
 // Formatierte Zahl mit Tausender-Trennzeichen
 const formatNumber = (num) => {
   if (num === '' || num === null || num === undefined) return '';
-  const n = typeof num === 'string' ? parseFloat(num.replace(/\./g, '').replace(',', '.')) : num;
+  const n = typeof num === 'string' ? parseNumber(num) : num;
   if (isNaN(n)) return '';
   return n.toLocaleString('de-DE', { maximumFractionDigits: 2 });
-};
-
-// Parse formatierte Zahl zurück
-const parseNumber = (str) => {
-  if (!str || str === '') return 0;
-  // Entferne Tausender-Punkte, ersetze Komma durch Punkt
-  const cleaned = str.toString().replace(/\./g, '').replace(',', '.');
-  const num = parseFloat(cleaned);
-  return isNaN(num) ? 0 : num;
 };
 
 // Datum formatieren: YYYY-MM-DD zu TT.MM.JJJJ
@@ -1324,7 +1422,7 @@ const Acc = ({ icon, title, sum, badge, open, toggle, color = '#3b82f6', disable
 );
 
 // Modal
-const Modal = ({ items, onSelect, onNew, onClose, onDel, onOpenImport, onDuplicate }) => {
+const Modal = ({ items, onSelect, onNew, onClose, onDel, onOpenImport, onDuplicate, onRestore }) => {
   const [showDataModal, setShowDataModal] = useState(false);
   
   return (
@@ -1372,7 +1470,7 @@ const Modal = ({ items, onSelect, onNew, onClose, onDel, onOpenImport, onDuplica
           <button className="btn-data" onClick={() => setShowDataModal(true)}><span className="btn-data-icon"><IconSave color="#6366f1" /></span>Daten verwalten</button>
         </div>
       </div>
-      {showDataModal && <DataModal items={items} onClose={() => setShowDataModal(false)} />}
+      {showDataModal && <DataModal items={items} onClose={() => setShowDataModal(false)} onRestore={onRestore} />}
     </div>
   );
 };
@@ -1446,7 +1544,7 @@ const BeteiligteModal = ({ beteiligte, onClose, onAdd, onDelete, onToggle, aktiv
   );
 };
 
-const DataModal = ({ items, onClose }) => {
+const DataModal = ({ items, onClose, onRestore }) => {
   const [importText, setImportText] = useState('');
   const [importError, setImportError] = useState('');
   const [importSuccess, setImportSuccess] = useState('');
@@ -1491,16 +1589,14 @@ const DataModal = ({ items, onClose }) => {
         throw new Error('Ungültiges Dateiformat');
       }
       
-      // Daten in localStorage speichern
-      localStorage.setItem('immoData', JSON.stringify(data.immobilien));
-      setImportSuccess(`✓ ${data.immobilien.length} Immobilie(n) importiert! Seite wird neu geladen...`);
+      // Über den regulären State-/Cloud-Pfad einspielen (kein Reload nötig)
+      setImportSuccess(`✓ ${data.immobilien.length} Immobilie(n) importiert!`);
       setImportError('');
-      
-      // Seite neu laden um Daten zu übernehmen
       setTimeout(() => {
-        window.location.reload();
-      }, 1500);
-      
+        if (onRestore) onRestore(data.immobilien);
+        onClose();
+      }, 800);
+
     } catch (err) {
       setImportError('Fehler beim Import: ' + err.message);
       setImportSuccess('');
@@ -1911,7 +2007,7 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
     const fullPrompt = IMMO_DOC_PROMPT + "\n\nAnalysiere dieses Dokument. Erkenne den Dokumenttyp, extrahiere alle Immobilien- und Darlehensdaten. Achte auf laufende Nummern zur Zuordnung. Antworte nur mit JSON.";
     const response = await fetch("/api/analyze", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem('sb_access_token') || ''}` },
       body: JSON.stringify({ image: base64, mimeType: mediaType, systemPrompt: fullPrompt })
     });
     if (!response.ok) {
@@ -1939,6 +2035,8 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
         for (let i = 0; i < openBrackets - closeBrackets; i++) repairedJson += ']';
         for (let i = 0; i < openBraces - closeBraces; i++) repairedJson += '}';
         result = JSON.parse(repairedJson);
+        // Nicht still reparieren: die KI-Antwort war abgeschnitten, Daten evtl. unvollständig
+        console.warn(`KI-Antwort für "${filename}" war unvollständig und wurde repariert — Importdaten prüfen.`);
       } else { throw parseError; }
     }
     const immoArray = Array.isArray(result.immobilien) ? result.immobilien : [];
@@ -2927,258 +3025,35 @@ const TilgungsplanModal = ({ darlehen, onClose }) => {
 };
 
 // Anschlussfinanzierung-Rechner Modal
-const AnschlussfinanzierungModal = ({ darlehen, onClose }) => {
-  const [neuerZins, setNeuerZins] = useState(darlehen.zinssatz + 1);
-  const [neueTilgung, setNeueTilgung] = useState(darlehen.tilgung || 2);
-  const [sondertilgung, setSondertilgung] = useState(0);
-  
-  const restschuld = darlehen.restschuld || darlehen.betrag * 0.8;
-  const restschuldNachSonder = restschuld - sondertilgung;
-  
-  const berechneRate = (betrag, zins, tilg) => betrag * ((zins + tilg) / 100) / 12;
-  
-  const alteRate = berechneRate(restschuld, darlehen.zinssatz, darlehen.tilgung || 2);
-  const neueRate = berechneRate(restschuldNachSonder, neuerZins, neueTilgung);
-  const differenz = neueRate - alteRate;
-  
-  // Szenarien
-  const szenarien = [
-    { name: 'Optimistisch', zins: darlehen.zinssatz },
-    { name: 'Moderat', zins: darlehen.zinssatz + 1 },
-    { name: 'Pessimistisch', zins: darlehen.zinssatz + 2 },
-    { name: 'Worst Case', zins: darlehen.zinssatz + 3 },
-  ];
-  
-  return (
-    <div className="modal-bg" onClick={onClose}>
-      <div className="modal anschluss-modal" onClick={e => e.stopPropagation()}>
-        <div className="modal-h">
-          <h2><span className="modal-icon"><IconFinanz color="#f59e0b" /></span>Anschlussfinanzierung</h2>
-          <button onClick={onClose}>×</button>
-        </div>
-        
-        <div className="modal-b">
-          <div className="anschluss-info">
-            <div className="anschluss-info-row">
-              <span>Aktuelles Darlehen</span>
-              <strong>{darlehen.name || darlehen.institut}</strong>
-            </div>
-            <div className="anschluss-info-row">
-              <span>Restschuld (geschätzt)</span>
-              <strong>{fmt(restschuld)}</strong>
-            </div>
-            <div className="anschluss-info-row">
-              <span>Zinsbindung endet</span>
-              <strong>{darlehen.zinsbindungEnde ? new Date(darlehen.zinsbindungEnde).toLocaleDateString('de-DE') : 'Nicht angegeben'}</strong>
-            </div>
-          </div>
-          
-          <div className="anschluss-inputs">
-            <h4>Neue Konditionen simulieren</h4>
-            <div className="anschluss-input-row">
-              <label>Sondertilgung vor Ablauf</label>
-              <NumInput value={sondertilgung} onChange={setSondertilgung} /> €
-            </div>
-            <div className="anschluss-input-row">
-              <label>Neuer Zinssatz</label>
-              <NumInput value={neuerZins} onChange={setNeuerZins} /> %
-            </div>
-            <div className="anschluss-input-row">
-              <label>Neue Tilgung</label>
-              <NumInput value={neueTilgung} onChange={setNeueTilgung} /> %
-            </div>
-          </div>
-          
-          <div className="anschluss-result">
-            <div className="anschluss-result-item">
-              <span>Neue Restschuld</span>
-              <b>{fmt(restschuldNachSonder)}</b>
-            </div>
-            <div className="anschluss-result-item">
-              <span>Alte Rate</span>
-              <b>{fmt(alteRate)}/Mon.</b>
-            </div>
-            <div className="anschluss-result-item highlight">
-              <span>Neue Rate</span>
-              <b className={differenz > 0 ? 'neg' : 'pos'}>{fmt(neueRate)}/Mon.</b>
-            </div>
-            <div className="anschluss-result-item">
-              <span>Differenz</span>
-              <b className={differenz > 0 ? 'neg' : 'pos'}>{differenz > 0 ? '+' : ''}{fmt(differenz)}/Mon.</b>
-            </div>
-          </div>
-          
-          <h4>Szenarien-Vergleich</h4>
-          <div className="anschluss-szenarien">
-            {szenarien.map((s, i) => {
-              const rate = berechneRate(restschuldNachSonder, s.zins, neueTilgung);
-              const diff = rate - alteRate;
-              return (
-                <div key={i} className={`szenario-card ${i === 1 ? 'active' : ''}`}>
-                  <span className="szenario-name">{s.name}</span>
-                  <span className="szenario-zins">{s.zins.toFixed(1)}% Zins</span>
-                  <span className="szenario-rate">{fmt(rate)}/Mon.</span>
-                  <span className={`szenario-diff ${diff > 0 ? 'neg' : 'pos'}`}>{diff > 0 ? '+' : ''}{fmt(diff)}</span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-        
-        <div className="modal-f">
-          <button className="btn-sec" onClick={onClose}>Schließen</button>
-        </div>
-      </div>
-    </div>
-  );
-};
+// (AnschlussfinanzierungModal und JahresreportModal entfernt: wurden nirgends
+// gerendert und rechneten noch mit dem Legacy-Mietmodell wohnflaeche*mieteProQm)
 
-// Jahresübersicht / Reporting Modal
-const JahresreportModal = ({ immobilien, onClose }) => {
-  const currentYear = new Date().getFullYear();
-  const [selectedYear, setSelectedYear] = useState(currentYear);
-  
-  // Berechne Jahreswerte
-  const berechneJahr = (year) => {
-    let einnahmen = 0;
-    let darlehenskosten = 0;
-    let nkVorauszahlung = 0;
-    
-    immobilien.forEach(immo => {
-      const s = immo.stammdaten;
-      // Mieteinnahmen
-      const monatsmiete = (s.wohnflaeche || 0) * (s.mieteProQm || 0) + (s.anzahlStellplaetze || 0) * (s.mieteStellplatz || 0);
-      einnahmen += monatsmiete * 12;
-      
-      // Darlehensraten
-      (immo.darlehen || []).forEach(d => {
-        darlehenskosten += (d.monatsrate || 0) * 12;
-      });
-      
-      // NK-Vorauszahlung
-      nkVorauszahlung += (s.nebenkostenVorauszahlung || 0) * 12;
-    });
-    
-    const cashflow = einnahmen - darlehenskosten - nkVorauszahlung;
-    
-    return { year, einnahmen, darlehenskosten, nkVorauszahlung, cashflow };
-  };
-  
-  const years = [currentYear - 2, currentYear - 1, currentYear, currentYear + 1, currentYear + 2];
-  const jahresData = years.map(y => berechneJahr(y));
-  const selectedData = berechneJahr(selectedYear);
-  
-  const maxValue = Math.max(...jahresData.map(d => Math.max(d.einnahmen, d.darlehenskosten + d.nkVorauszahlung)));
-  
-  return (
-    <div className="modal-bg" onClick={onClose}>
-      <div className="modal jahresreport-modal" onClick={e => e.stopPropagation()}>
-        <div className="modal-h">
-          <h2><span className="modal-icon"><IconChart color="#10b981" /></span>Jahresübersicht</h2>
-          <button onClick={onClose}>×</button>
-        </div>
-        
-        <div className="modal-b">
-          <div className="jr-year-selector">
-            {years.map(y => (
-              <button key={y} className={`jr-year-btn ${y === selectedYear ? 'active' : ''}`} onClick={() => setSelectedYear(y)}>
-                {y}
-              </button>
-            ))}
-          </div>
-          
-          <div className="jr-summary">
-            <div className="jr-sum-card pos">
-              <span>Mieteinnahmen</span>
-              <b>{fmt(selectedData.einnahmen)}</b>
-              <small>{fmt(selectedData.einnahmen / 12)}/Monat</small>
-            </div>
-            <div className="jr-sum-card neg">
-              <span>Darlehenskosten</span>
-              <b>{fmt(selectedData.darlehenskosten)}</b>
-              <small>{fmt(selectedData.darlehenskosten / 12)}/Monat</small>
-            </div>
-            <div className="jr-sum-card neutral">
-              <span>NK-Vorauszahlung</span>
-              <b>{fmt(selectedData.nkVorauszahlung)}</b>
-              <small>{fmt(selectedData.nkVorauszahlung / 12)}/Monat</small>
-            </div>
-            <div className={`jr-sum-card ${selectedData.cashflow >= 0 ? 'pos' : 'neg'} highlight`}>
-              <span>Cashflow</span>
-              <b>{fmt(selectedData.cashflow)}</b>
-              <small>{fmt(selectedData.cashflow / 12)}/Monat</small>
-            </div>
-          </div>
-          
-          <h4>Jahresvergleich</h4>
-          <div className="jr-chart">
-            {jahresData.map((d, i) => (
-              <div key={i} className={`jr-chart-col ${d.year === selectedYear ? 'active' : ''}`}>
-                <div className="jr-bars">
-                  <div className="jr-bar einnahmen" style={{ height: `${(d.einnahmen / maxValue) * 100}%` }} title={`Einnahmen: ${fmt(d.einnahmen)}`}></div>
-                  <div className="jr-bar ausgaben" style={{ height: `${((d.darlehenskosten + d.nkVorauszahlung) / maxValue) * 100}%` }} title={`Ausgaben: ${fmt(d.darlehenskosten + d.nkVorauszahlung)}`}></div>
-                </div>
-                <span className="jr-year-label">{d.year}</span>
-                <span className={`jr-cashflow ${d.cashflow >= 0 ? 'pos' : 'neg'}`}>{d.cashflow >= 0 ? '+' : ''}{(d.cashflow / 1000).toFixed(1)}k</span>
-              </div>
-            ))}
-          </div>
-          <div className="jr-legend">
-            <span><span className="jr-dot einnahmen"></span>Einnahmen</span>
-            <span><span className="jr-dot ausgaben"></span>Ausgaben</span>
-          </div>
-          
-          <h4>Aufschlüsselung nach Immobilie</h4>
-          <div className="jr-immo-list">
-            {immobilien.map((immo, i) => {
-              const s = immo.stammdaten;
-              const miete = ((s.wohnflaeche || 0) * (s.mieteProQm || 0) + (s.anzahlStellplaetze || 0) * (s.mieteStellplatz || 0)) * 12;
-              const darlehen = (immo.darlehen || []).reduce((sum, d) => sum + (d.monatsrate || 0) * 12, 0);
-              const cf = miete - darlehen;
-              return (
-                <div key={i} className="jr-immo-row">
-                  <span className="jr-immo-name">{s.name}</span>
-                  <span className="jr-immo-miete pos">+{fmt(miete)}</span>
-                  <span className="jr-immo-darlehen neg">-{fmt(darlehen)}</span>
-                  <span className={`jr-immo-cf ${cf >= 0 ? 'pos' : 'neg'}`}>{cf >= 0 ? '+' : ''}{fmt(cf)}</span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-        
-        <div className="modal-f">
-          <button className="btn-sec" onClick={onClose}>Schließen</button>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-// Nebenkostenabrechnung
 const NebenkostenSection = ({ immo, onUpdate }) => {
   const s = immo.stammdaten;
-  const [abrechnungen, setAbrechnungen] = useState(immo.nebenkostenabrechnungen || []);
+  // Direkt aus den Props lesen (kein lokaler State): der frühere useState wurde nur beim
+  // Mount initialisiert — beim Objektwechsel ohne Remount schrieb addAbrechnung sonst die
+  // Abrechnungen von Objekt A in Objekt B, und Undo wurde nicht reflektiert.
+  const abrechnungen = immo.nebenkostenabrechnungen || [];
   const [showForm, setShowForm] = useState(false);
   const [newAbr, setNewAbr] = useState({ jahr: new Date().getFullYear() - 1, vorauszahlung: 0, abrechnung: 0, nachzahlung: 0 });
-  
+
   const berechneNachzahlung = () => {
     const voraus = (s.nebenkostenVorauszahlung || 0) * 12;
     return newAbr.abrechnung - voraus;
   };
-  
+
   const addAbrechnung = () => {
     const nachzahlung = berechneNachzahlung();
     const updated = [...abrechnungen, { ...newAbr, vorauszahlung: (s.nebenkostenVorauszahlung || 0) * 12, nachzahlung }];
-    setAbrechnungen(updated);
     onUpdate({ ...immo, nebenkostenabrechnungen: updated });
     setShowForm(false);
     setNewAbr({ jahr: new Date().getFullYear() - 1, vorauszahlung: 0, abrechnung: 0, nachzahlung: 0 });
   };
-  
-  const removeAbrechnung = (idx) => {
-    const updated = abrechnungen.filter((_, i) => i !== idx);
-    setAbrechnungen(updated);
+
+  // Löschen per Objekt-Referenz (nicht Index): die Anzeige ist nach Jahr sortiert,
+  // ein Index aus der sortierten Liste würde im Original das falsche Element treffen
+  const removeAbrechnung = (abr) => {
+    const updated = abrechnungen.filter(x => x !== abr);
     onUpdate({ ...immo, nebenkostenabrechnungen: updated });
   };
   
@@ -3188,7 +3063,7 @@ const NebenkostenSection = ({ immo, onUpdate }) => {
       
       {abrechnungen.length > 0 && (
         <div className="nk-list">
-          {abrechnungen.sort((a, b) => b.jahr - a.jahr).map((abr, idx) => (
+          {[...abrechnungen].sort((a, b) => b.jahr - a.jahr).map((abr, idx) => (
             <div key={idx} className="nk-item">
               <span className="nk-jahr">{abr.jahr}</span>
               <span className="nk-voraus">Voraus: {fmt(abr.vorauszahlung)}</span>
@@ -3196,7 +3071,7 @@ const NebenkostenSection = ({ immo, onUpdate }) => {
               <span className={`nk-ergebnis ${abr.nachzahlung > 0 ? 'neg' : 'pos'}`}>
                 {abr.nachzahlung > 0 ? 'Nachz.' : 'Guthaben'}: {fmt(Math.abs(abr.nachzahlung))}
               </span>
-              <button className="btn-del-small" onClick={() => removeAbrechnung(idx)}>×</button>
+              <button className="btn-del-small" onClick={() => removeAbrechnung(abr)}>×</button>
             </div>
           ))}
         </div>
@@ -3341,7 +3216,7 @@ Wichtig:
 
       const response = await fetch("/api/analyze", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem('sb_access_token') || ''}` },
         body: JSON.stringify({
           image: base64Data,
           mimeType: mediaType,
@@ -3588,7 +3463,7 @@ Wichtig:
 
       const response = await fetch("/api/analyze", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem('sb_access_token') || ''}` },
         body: JSON.stringify({
           image: base64Data,
           mimeType: mediaType,
@@ -3975,7 +3850,7 @@ const SmartLoanImportModal = ({ immobilien = [], onClose, onImport }) => {
     const sysPrompt = slGeneratePrompt(immobilien);
     try {
       const res = await fetch('/api/analyze', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('sb_access_token') || ''}` },
         body: JSON.stringify({ image: base64Data, mimeType: mediaType,
           systemPrompt: sysPrompt + '\n\nAnalysiere dieses Dokument. Antworte nur mit JSON.' }),
       });
@@ -4233,10 +4108,15 @@ const exportPrintCSS = `
   .dl-card .dl-item{} .dl-card .dl-item .lbl{font-size:9px;color:#666;text-transform:uppercase} .dl-card .dl-item .val{font-size:11px;font-weight:500}
 `;
 
+// HTML-Escape für Freitext-Felder im Print-Export. Wichtig: diese Felder stammen
+// z.T. aus dem KI-Dokumentenimport — ohne Escaping könnte ein präpariertes Dokument
+// Script in das Export-Fenster einschleusen (XSS, gleiche Origin wie die App).
+const esc = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
 const openPrintWindow = (html, title) => {
   const w = window.open('', '_blank', 'width=900,height=700');
   if (!w) { alert('Popup blockiert – bitte Popup-Blocker deaktivieren.'); return; }
-  w.document.write(`<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>${title}</title><style>${exportPrintCSS}</style></head><body>${html}</body></html>`);
+  w.document.write(`<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>${esc(title)}</title><style>${exportPrintCSS}</style></head><body>${html}</body></html>`);
   w.document.close();
   setTimeout(() => w.print(), 400);
 };
@@ -4262,7 +4142,7 @@ const exportSingleImmobilie = (p, c) => {
 
   let html = `
   <div class="header">
-    <div><h1>${s.name || 'Immobilie'}</h1><div class="sub">${typLabel} · ${s.adresse || 'Keine Adresse'}${s.eigentuemer ? ` · ${s.eigentuemer}` : ''}</div></div>
+    <div><h1>${esc(s.name) || 'Immobilie'}</h1><div class="sub">${esc(typLabel)} · ${esc(s.adresse) || 'Keine Adresse'}${s.eigentuemer ? ` · ${esc(s.eigentuemer)}` : ''}</div></div>
     <div style="text-align:right"><div class="logo">IMMOHUB</div><div class="date">${new Date().toLocaleDateString('de-DE')} · Datenexport</div></div>
   </div>
 
@@ -4277,12 +4157,12 @@ const exportSingleImmobilie = (p, c) => {
 
   <div class="two-col">
     <div class="section"><h2>Objektdaten</h2><table>
-      ${row('Name', s.name)}${row('Typ', typLabel)}${row('Adresse', s.adresse)}
-      ${row('Projekt', s.projekt)}${row('Eigentümer', s.eigentuemer)}
+      ${row('Name', esc(s.name))}${row('Typ', esc(typLabel))}${row('Adresse', esc(s.adresse))}
+      ${row('Projekt', esc(s.projekt))}${row('Eigentümer', esc(s.eigentuemer))}
       ${row('Nutzung', s.nutzung === 'vermietet' ? 'Vermietet' : 'Eigengenutzt')}
       ${row('Status', s.objektstatus === 'neubau' ? 'Neubau' : 'Bestand')}
       ${row('Bundesland', blName)}${row('Kaufdatum', fD$(s.kaufdatum))}${row('Baujahr', s.baujahr)}
-      ${row('Wohnungs-Nr.', s.wohnungsNr)}${row('Etage', s.etage)}${row('Vermietete Fläche', s.wohnflaeche ? Number(s.wohnflaeche).toLocaleString('de-DE', { maximumFractionDigits: 2 }) + ' qm' : null)}
+      ${row('Wohnungs-Nr.', esc(s.wohnungsNr))}${row('Etage', esc(s.etage))}${row('Vermietete Fläche', s.wohnflaeche ? Number(s.wohnflaeche).toLocaleString('de-DE', { maximumFractionDigits: 2 }) + ' qm' : null)}
     </table></div>
 
     <div class="section"><h2>Kaufpreis & Anschaffungskosten</h2><table>
@@ -4315,7 +4195,7 @@ const exportSingleImmobilie = (p, c) => {
 
     <div class="section"><h2>Mietdaten</h2><table>
       ${s.nutzung === 'eigengenutzt' ? '<tr><td colspan="2"><em>Eigengenutzt</em></td></tr>' : `
-        ${row('Mieter', s.mieterName)}
+        ${row('Mieter', esc(s.mieterName))}
         ${row('Status', s.mietstatusAktiv === false ? '<span class="badge badge-gray">Leerstand</span>' : '<span class="badge badge-green">Vermietet</span>')}
         ${row('Mietbeginn', fD$(s.mietbeginn))}${row('Mietende', fD$(s.mietende))}
         ${row('Kaltmiete', s.kaltmiete ? f$(s.kaltmiete) + '/Mon.' : null)}
@@ -4342,14 +4222,14 @@ const exportSingleImmobilie = (p, c) => {
   if (darlehen.length > 0) {
     html += `<div class="section"><h2>Darlehen (${darlehen.length})</h2>`;
     for (const d of darlehen) {
-      html += `<div class="dl-card"><h3>${d.name || 'Darlehen'}${d.institut ? ` · ${d.institut}` : ''}</h3><div class="dl-grid">
+      html += `<div class="dl-card"><h3>${esc(d.name) || 'Darlehen'}${d.institut ? ` · ${esc(d.institut)}` : ''}</h3><div class="dl-grid">
         ${d.betrag ? `<div class="dl-item"><div class="lbl">Darlehensbetrag</div><div class="val">${f$(d.betrag)}</div></div>` : ''}
         ${d.restschuld ? `<div class="dl-item"><div class="lbl">Restschuld</div><div class="val">${f$(d.restschuld)}</div></div>` : ''}
         ${d.zinssatz ? `<div class="dl-item"><div class="lbl">Zinssatz</div><div class="val">${d.zinssatz}%</div></div>` : ''}
         ${d.tilgung ? `<div class="dl-item"><div class="lbl">Tilgung</div><div class="val">${d.tilgung}%</div></div>` : ''}
         ${d.monatsrate ? `<div class="dl-item"><div class="lbl">Monatsrate</div><div class="val">${f$(d.monatsrate)}</div></div>` : ''}
         ${d.zinsbindungEnde ? `<div class="dl-item"><div class="lbl">Zinsbindung bis</div><div class="val">${fD$(d.zinsbindungEnde)}</div></div>` : ''}
-        ${d.kontonummer ? `<div class="dl-item"><div class="lbl">Kontonummer</div><div class="val">${d.kontonummer}</div></div>` : ''}
+        ${d.kontonummer ? `<div class="dl-item"><div class="lbl">Kontonummer</div><div class="val">${esc(d.kontonummer)}</div></div>` : ''}
         ${d.sondertilgung ? `<div class="dl-item"><div class="lbl">Sondertilgung</div><div class="val">${d.sondertilgung}%</div></div>` : ''}
         ${d.abschluss ? `<div class="dl-item"><div class="lbl">Abschluss</div><div class="val">${fD$(d.abschluss)}</div></div>` : ''}
       </div></div>`;
@@ -4361,14 +4241,14 @@ const exportSingleImmobilie = (p, c) => {
   // Sonderausstattung
   if (sa.length > 0 && sa.some(i => i.bezeichnung || i.betrag)) {
     html += `<div class="section"><h2>Sonderausstattung</h2><table><tr><th>Bezeichnung</th><th class="val">Betrag</th><th class="val">AfA (10%)</th></tr>`;
-    for (const item of sa) { if (item.bezeichnung || item.betrag) html += `<tr><td>${item.bezeichnung || '—'}</td><td class="val">${f$(item.betrag)}</td><td class="val">${f$((item.betrag||0)*0.1)}/J.</td></tr>`; }
+    for (const item of sa) { if (item.bezeichnung || item.betrag) html += `<tr><td>${esc(item.bezeichnung) || '—'}</td><td class="val">${f$(item.betrag)}</td><td class="val">${f$((item.betrag||0)*0.1)}/J.</td></tr>`; }
     html += `</table></div>`;
   }
 
   // Miethistorie
   if (mh.length > 0) {
     html += `<div class="section"><h2>Miethistorie</h2><table><tr><th>Mieter</th><th>Von</th><th>Bis</th><th class="val">Miete</th><th>Grund</th></tr>`;
-    for (const m of mh) { html += `<tr><td>${m.mieter || '—'}</td><td>${fD$(m.von)}</td><td>${fD$(m.bis) || '—'}</td><td class="val">${f$(m.miete)}/Mon.</td><td>${m.grund || '—'}</td></tr>`; }
+    for (const m of mh) { html += `<tr><td>${esc(m.mieter) || '—'}</td><td>${fD$(m.von)}</td><td>${fD$(m.bis) || '—'}</td><td class="val">${f$(m.miete)}/Mon.</td><td>${esc(m.grund) || '—'}</td></tr>`; }
     html += `</table></div>`;
   }
 
@@ -4403,9 +4283,9 @@ const exportPortfolio = (filtered, totals, avgRendite) => {
     const s = i.stammdaten;
     const typLabel = TYP_LABELS[s.typ] || s.typ?.toUpperCase() || '—';
     html += `<tr>
-      <td><b>${s.name || '—'}</b></td>
-      <td><span class="badge badge-blue">${typLabel}</span></td>
-      <td>${s.adresse || '—'}</td>
+      <td><b>${esc(s.name) || '—'}</b></td>
+      <td><span class="badge badge-blue">${esc(typLabel)}</span></td>
+      <td>${esc(s.adresse) || '—'}</td>
       <td class="val">${Number(i.wohnflaeche || 0).toLocaleString('de-DE', { maximumFractionDigits: 2 })} qm</td>
       <td class="val">${f(i.kp)}</td>
       <td class="val pos">${f(i.jm)}</td>
@@ -4431,14 +4311,14 @@ const exportPortfolio = (filtered, totals, avgRendite) => {
     const s = i.stammdaten;
     const dl = i.darlehen || [];
     const rs = dl.reduce((sum, d) => sum + (d.restschuld || d.betrag || 0), 0);
-    html += `<div class="dl-card"><h3>${s.name || '—'}${s.adresse ? ` · ${s.adresse}` : ''}</h3><div class="dl-grid">
+    html += `<div class="dl-card"><h3>${esc(s.name) || '—'}${s.adresse ? ` · ${esc(s.adresse)}` : ''}</h3><div class="dl-grid">
       <div class="dl-item"><div class="lbl">Kaufpreis</div><div class="val">${f(i.kp)}</div></div>
       <div class="dl-item"><div class="lbl">Jahresmiete</div><div class="val pos">${f(i.jm)}</div></div>
       <div class="dl-item"><div class="lbl">Rendite</div><div class="val">${fp(i.rendite)}</div></div>
       <div class="dl-item"><div class="lbl">Fläche</div><div class="val">${Number(i.wohnflaeche || 0).toLocaleString('de-DE', { maximumFractionDigits: 2 })} qm</div></div>
       <div class="dl-item"><div class="lbl">Verbindlichkeiten</div><div class="val">${f(rs)}</div></div>
       <div class="dl-item"><div class="lbl">AfA/Jahr</div><div class="val">${f(i.afaGes)}</div></div>
-      ${s.mieterName ? `<div class="dl-item"><div class="lbl">Mieter</div><div class="val">${s.mieterName}</div></div>` : ''}
+      ${s.mieterName ? `<div class="dl-item"><div class="lbl">Mieter</div><div class="val">${esc(s.mieterName)}</div></div>` : ''}
       ${dl.length > 0 ? `<div class="dl-item"><div class="lbl">Darlehen</div><div class="val">${dl.length}× · ${f(dl.reduce((s,d) => s + (d.monatsrate||0), 0))}/Mon.</div></div>` : ''}
       ${s.nutzung ? `<div class="dl-item"><div class="lbl">Nutzung</div><div class="val">${s.nutzung === 'vermietet' ? 'Vermietet' : 'Eigengenutzt'}</div></div>` : ''}
     </div></div>`;
@@ -4451,24 +4331,49 @@ const exportPortfolio = (filtered, totals, avgRendite) => {
 
 // Stammdaten
 // Aggregation: Werte eines Gebäudes automatisch aus seinen Einheiten
-const cmUnit = (immo) => {
+// === Zentrale Darlehens-Helfer — EINZIGE Quelle für Rate/Restschuld ===
+// Monatsrate eines Darlehens: erfasste Monatsrate, sonst Annuität aus Zins+Tilgung.
+// (zinssatz||0)+(tilgung||0): auch 0%-Zins-Darlehen (KfW) mit Tilgung zählen.
+const loanRate = (d) => (d.monatsrate > 0) ? d.monatsrate : ((d.betrag > 0 && ((d.zinssatz||0)+(d.tilgung||0)) > 0) ? d.betrag*(((d.zinssatz||0)+(d.tilgung||0))/100)/12 : 0);
+const loansRate = (list) => (list||[]).reduce((a,d)=>a+loanRate(d),0);
+const loansRest = (list) => (list||[]).reduce((a,d)=>a+(d.restschuld||d.betrag||0),0);
+
+// parentGwg: Grundstückswert des übergeordneten Gebäudes. Einheiten haben i.d.R. kein
+// eigenes Grundstück erfasst — ohne den geerbten Wert bliebe der Bodenwertabzug bei der
+// AfA-Aggregation aus (AfA zu hoch, abweichend von der Einzelansicht der Einheit).
+// gesamtShare: Anteil der Einheit (nach Wohnfläche) am geerbten Bodenwert bei
+// eigentumsart 'gesamt' — sonst würde JEDE Einheit den vollen Gebäude-Bodenwert abziehen.
+const cmUnit = (immo, parentGwg = 0, gesamtShare = 1) => {
   const s = (immo && immo.stammdaten) || {}; const darlehen = (immo && immo.darlehen) || [];
   const kp = (s.kaufpreisImmobilie||0)+(s.mehrkosten||0)+(s.kaufpreisStellplatz||0);
   const nk = (s.maklerProvision||0)+(s.grunderwerbsteuer||0)+(s.notarkosten||0);
   const jm = ((s.kaltmiete||0)+(s.mieteStellplatz||0)+(s.mieteSonderausstattung||0))*12;
-  const gwg = (s.grundstueckGroesse||0)*(s.bodenrichtwert||0);
-  const ga = s.erbbaurecht ? 0 : (s.eigentumsart==='gesamt' ? gwg : (s.teileigentumsanteil>0 ? (s.teileigentumsanteil/10000)*gwg : 0));
+  const ownGwg = (s.grundstueckGroesse||0)*(s.bodenrichtwert||0);
+  const inheriting = !(ownGwg > 0) && parentGwg > 0;
+  const gwg = ownGwg > 0 ? ownGwg : parentGwg;
+  const ga = s.erbbaurecht ? 0 : (s.eigentumsart==='gesamt' ? gwg * (inheriting ? gesamtShare : 1) : (s.teileigentumsanteil>0 ? (s.teileigentumsanteil/10000)*gwg : 0));
   const afaGeb = ((kp+nk)-ga)*((s.afaSatz||3)/100);
   const saSumme = (s.sonderausstattung||[]).reduce((a,i)=>a+(i.betrag||0),0);
   const afaSA = saSumme*0.1;
   const afaGes = afaGeb + afaSA + (s.degressiveAfa||0);
-  const fk = darlehen.reduce((a,d)=>a+(d.restschuld||d.betrag||0),0);
-  const rate = darlehen.reduce((a,d)=>a+(d.monatsrate>0?d.monatsrate:(d.betrag>0&&d.zinssatz>0?d.betrag*((d.zinssatz+(d.tilgung||0))/100)/12:0)),0);
+  const fk = loansRest(darlehen);
+  const rate = loansRate(darlehen);
   return {kp,nk,jm,wohnflaeche:(s.wohnflaeche||0),verkehrswert:(s.verkehrswert||0),afaGeb,afaSA,afaGes,fk,rate,saSumme,saCount:(s.sonderausstattung||[]).length};
 };
 const cmAgg = (container, children) => {
   const own = cmUnit(container);
-  const acc = children.reduce((a,u)=>{const m=cmUnit(u);a.kp+=m.kp;a.nk+=m.nk;a.jm+=m.jm;a.wohnflaeche+=m.wohnflaeche;a.verkehrswert+=m.verkehrswert;a.afaGeb+=m.afaGeb;a.afaSA+=m.afaSA;a.afaGes+=m.afaGes;a.fk+=m.fk;a.rate+=m.rate;a.saSumme+=m.saSumme;a.saCount+=m.saCount;return a;},{kp:0,nk:0,jm:0,wohnflaeche:0,verkehrswert:0,afaGeb:0,afaSA:0,afaGes:0,fk:0,rate:0,saSumme:0,saCount:0});
+  const cs = (container && container.stammdaten) || {};
+  const containerGwg = (cs.grundstueckGroesse||0)*(cs.bodenrichtwert||0);
+  const totalFl = children.reduce((a,u)=>a+(((u.stammdaten||{}).wohnflaeche)||0),0);
+  const acc = children.reduce((a,u)=>{const fl=(((u.stammdaten||{}).wohnflaeche)||0);const m=cmUnit(u, containerGwg, totalFl>0 ? fl/totalFl : (children.length>0 ? 1/children.length : 1));a.kp+=m.kp;a.nk+=m.nk;a.jm+=m.jm;a.wohnflaeche+=m.wohnflaeche;a.verkehrswert+=m.verkehrswert;a.afaGeb+=m.afaGeb;a.afaSA+=m.afaSA;a.afaGes+=m.afaGes;a.fk+=m.fk;a.rate+=m.rate;a.saSumme+=m.saSumme;a.saCount+=m.saCount;return a;},{kp:0,nk:0,jm:0,wohnflaeche:0,verkehrswert:0,afaGeb:0,afaSA:0,afaGes:0,fk:0,rate:0,saSumme:0,saCount:0});
+  // Darlehens-Dedupe für Altdaten: Darlehen, die früher per "In Gebäude übernehmen"
+  // sowohl am Container ALS AUCH an einer Einheit stehen, nur einmal zählen
+  const _unitLoans = children.flatMap(u => u.darlehen || []);
+  const _loanKey = d => `${(d.kontonummer||'').toString().trim()}|${(d.name||'').toString().trim()}|${d.betrag||0}`;
+  const _unitKeys = new Set(_unitLoans.map(_loanKey));
+  const _ownUnique = (container.darlehen || []).filter(d => !_unitKeys.has(_loanKey(d)));
+  const dedupFk = loansRest(_ownUnique) + loansRest(_unitLoans);
+  const dedupRate = loansRate(_ownUnique) + loansRate(_unitLoans);
   // Per-Feld "entweder/oder": Liegt der Wert in den Einheiten, gilt deren Summe; sonst der Gebäude-Eigenwert. Verhindert Doppelzählung, wenn früher per "In Gebäude übernehmen" schon hochgerollt wurde.
   const pick = (a, b) => a > 0 ? a : b;
   const kp = pick(acc.kp, own.kp);
@@ -4478,8 +4383,12 @@ const cmAgg = (container, children) => {
   const afaGeb = pick(acc.afaGeb, own.afaGeb);
   const afaSA = pick(acc.afaSA, own.afaSA);
   const afaGes = pick(acc.afaGes, own.afaGes);
-  const fk = pick(acc.fk, own.fk);
-  const rate = pick(acc.rate, own.rate);
+  // Darlehen IMMER additiv (nicht "entweder/oder"): ein Darlehen am Gebäude gilt für
+  // alle Einheiten zusammen, ein Darlehen an der Einheit nur für diese — beide existieren
+  // parallel und müssen in Verbindlichkeiten/Rate zusammengezählt werden.
+  // (dedupFk/dedupRate: identische Darlehen an Container UND Einheit nur einmal)
+  const fk = dedupFk;
+  const rate = dedupRate;
   const wohnflaeche = pick(acc.wohnflaeche, own.wohnflaeche);
   const saSumme = pick(acc.saSumme, own.saSumme);
   const saCount = acc.saCount > 0 ? acc.saCount : (own.saCount || 0);
@@ -4585,7 +4494,12 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
     const n = { ...s, [f]: v };
     if (['bundesland', 'kaufpreisImmobilie', 'kaufpreisStellplatz', 'mehrkosten'].includes(f)) {
       const bl = f === 'bundesland' ? v : s.bundesland;
-      const kp = (f === 'kaufpreisImmobilie' ? v : s.kaufpreisImmobilie) + (f === 'mehrkosten' ? v : (s.mehrkosten || 0)) + (f === 'kaufpreisStellplatz' ? v : s.kaufpreisStellplatz);
+      // Number(x)||0 zwingend: ein geleertes Input liefert '' — ohne Konvertierung
+      // würde hier ein String konkateniert und die GrESt um Größenordnungen falsch
+      const kpI = Number(f === 'kaufpreisImmobilie' ? v : s.kaufpreisImmobilie) || 0;
+      const mk = Number(f === 'mehrkosten' ? v : s.mehrkosten) || 0;
+      const kpS = Number(f === 'kaufpreisStellplatz' ? v : s.kaufpreisStellplatz) || 0;
+      const kp = kpI + mk + kpS;
       n.grunderwerbsteuer = kp * ((BUNDESLAENDER[bl]?.grest || 6) / 100);
     }
     upd({ ...p, stammdaten: n });
@@ -4961,11 +4875,18 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
             <div className="res hl"><span>Gesamt-AfA p.a.</span><span>{fmt(c.afaGeb + (s.degressiveAfa || 0))}</span></div>
           )}
           {p.isContainer && einheiten.length > 0 && (() => {
+            const _sumUnitFl = einheiten.reduce((a, u) => a + (((u.stammdaten || {}).wohnflaeche) || 0), 0);
             const unitAfa = (us) => {
               const kp = (us.kaufpreisImmobilie || 0) + (us.mehrkosten || 0) + (us.kaufpreisStellplatz || 0);
               const nk = (us.maklerProvision || 0) + (us.grunderwerbsteuer || 0) + (us.notarkosten || 0);
-              const gwg = (us.grundstueckGroesse || 0) * (us.bodenrichtwert || 0);
-              const ga = us.erbbaurecht ? 0 : (us.eigentumsart === 'gesamt' ? gwg : (us.teileigentumsanteil > 0 ? (us.teileigentumsanteil / 10000) * gwg : 0));
+              // Grundstück hängt am Gebäude → fehlt es an der Einheit, den Gebäudewert erben
+              // (sonst bleibt der Bodenwertabzug aus und die AfA wäre zu hoch); bei
+              // eigentumsart 'gesamt' anteilig nach Wohnfläche (sonst N-facher Abzug)
+              const ownGwg = (us.grundstueckGroesse || 0) * (us.bodenrichtwert || 0);
+              const inheriting = !(ownGwg > 0);
+              const gwg = ownGwg > 0 ? ownGwg : ((s.grundstueckGroesse || 0) * (s.bodenrichtwert || 0));
+              const share = (inheriting && us.eigentumsart === 'gesamt') ? (_sumUnitFl > 0 ? ((us.wohnflaeche || 0) / _sumUnitFl) : (1 / Math.max(einheiten.length, 1))) : 1;
+              const ga = us.erbbaurecht ? 0 : (us.eigentumsart === 'gesamt' ? gwg * share : (us.teileigentumsanteil > 0 ? (us.teileigentumsanteil / 10000) * gwg : 0));
               return ((kp + nk) - ga) * ((us.afaSatz || 3) / 100) + (us.degressiveAfa || 0);
             };
             const sumFlaeche = (p.stammdaten?.grundstueckGroesse || 0); // Grundstück hängt am Gebäude, nicht an Einheiten
@@ -5469,9 +5390,9 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
           )}
           {p.isContainer && (() => {
             const allLoans = [...(p.darlehen || []), ...einheiten.flatMap(u => u.darlehen || [])];
-            const rate = (arr) => arr.reduce((a, d) => a + (d.monatsrate > 0 ? d.monatsrate : (d.betrag > 0 && d.zinssatz > 0 ? d.betrag * ((d.zinssatz + (d.tilgung || 0)) / 100) / 12 : 0)), 0);
+            const rate = (arr) => loansRate(arr); // zentrale Darlehens-Helfer
             const sumBetrag = allLoans.reduce((a, d) => a + (d.betrag || 0), 0);
-            const sumRest = allLoans.reduce((a, d) => a + (d.restschuld || d.betrag || 0), 0);
+            const sumRest = loansRest(allLoans);
             return (
               <div style={{padding:'12px',marginBottom:'14px',border:'1px solid #3b82f6',borderRadius:'8px',background:'rgba(59,130,246,0.06)'}}>
                 <div style={{fontSize:'13px',fontWeight:'600',marginBottom:'8px',display:'flex',alignItems:'center',gap:'6px'}}><span style={{width:'18px',height:'18px',display:'inline-flex'}}><IconChart color="#3b82f6" /></span>Finanzierung gesamt ({allLoans.length} Darlehen)</div>
@@ -5548,7 +5469,6 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
             <Input label="KfW-Programm" value={s.kfwProgramm} onChange={v => set('kfwProgramm', v)} type="text" ph="z.B. 124, 261" />
           </div>
           <Input label="BAFA-Förderung" value={s.bafaFoerderung} onChange={v => set('bafaFoerderung', v)} suffix="€" />
-          <Input label="Landesförderung" value={s.landesFoerderung} onChange={v => set('landesFoerderung', v)} suffix="€" />
           <Input label="Landesförderung" value={s.landesFoerderung} onChange={v => set('landesFoerderung', v)} suffix="€" />
           {((s.kfwZuschuss || 0) + (s.bafaFoerderung || 0) + (s.landesFoerderung || 0)) > 0 && (
             <div className="res"><span>Förderungen gesamt</span><span className="pos">{fmt((s.kfwZuschuss || 0) + (s.bafaFoerderung || 0) + (s.landesFoerderung || 0))}</span></div>
@@ -5783,10 +5703,7 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
           </div>
           {(p.darlehen || []).length > 0 && (() => {
             const sumBetrag = (p.darlehen || []).reduce((a, d) => a + (d.betrag || 0), 0);
-            const sumMonat = (p.darlehen || []).reduce((a, d) => {
-              if (d.monatsrate > 0) return a + d.monatsrate;
-              return a + (d.betrag || 0) * (((d.zinssatz || 0) + (d.tilgung || 0)) / 100) / 12;
-            }, 0);
+            const sumMonat = loansRate(p.darlehen);
             return <div className="res hl"><span>Gesamt FK / Monatsrate</span><span>{fmt(sumBetrag)} / {fmt(sumMonat)}</span></div>;
           })()}
           <hr />
@@ -5948,6 +5865,11 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
               e.currentTarget.classList.remove('dragover');
               const files = Array.from(e.dataTransfer.files);
               files.forEach(file => {
+                // Nur Bilder & PDFs zulassen (alles landet als Base64 im Portfolio)
+                if (!file.type.startsWith('image/') && file.type !== 'application/pdf') {
+                  alert(`Dateityp von "${file.name}" wird nicht unterstützt (nur Bilder & PDFs). Bitte Cloud-Link verwenden.`);
+                  return;
+                }
                 if (file.size > 500000) {
                   alert(`Datei "${file.name}" ist zu groß (max. 500KB). Bitte Cloud-Link verwenden.`);
                   return;
@@ -6011,10 +5933,12 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
                       <option value="sonstige">Sonstiges</option>
                     </select>
                     {doc.fileType?.startsWith('image/') && (
-                      <button className="doc-view" onClick={() => window.open(doc.fileData, '_blank')} title="Ansehen">◉</button>
+                      <button className="doc-view" onClick={() => { if (String(doc.fileData).startsWith('data:')) window.open(doc.fileData, '_blank'); }} title="Ansehen">◉</button>
                     )}
                     {doc.fileType === 'application/pdf' && (
                       <button className="doc-view" onClick={() => {
+                        // Nur echte data:-URLs einbetten (verhindert javascript:/Markup-Injection aus manipulierten Daten)
+                        if (!String(doc.fileData).startsWith('data:')) return;
                         const win = window.open();
                         win.document.write(`<iframe src="${doc.fileData}" style="width:100%;height:100%;border:none;"></iframe>`);
                       }} title="Ansehen">◉</button>
@@ -6488,64 +6412,10 @@ const Rendite = ({ p, upd, c, immobilien = [] }) => {
 };
 
 // Steuer
-const Steuer = ({ p, upd, c, immobilien = [] }) => {
-  const kj = parseInt(p.stammdaten.kaufdatum?.split('-')[0]) || 2024;
-  const [yr, setYr] = useState(kj);
-  const [sec, setSec] = useState(null);
-  const [showExport, setShowExport] = useState(false);
-
-  // Vorjahres-Daten holen
-  const prevYd = p.steuerJahre?.[yr - 1] || null;
-  const hasOwnData = !!p.steuerJahre?.[yr];
-
-  // Wenn kein eigenes Jahr existiert, aber Vorjahr vorhanden → Vorjahreswerte als Draft
-  const EINNAHMEN_FIELDS = ['miet', 'nkVor', 'nkNach', 'nkAbr'];
-  const defaultYd = { wk: [], miet: c.jm, nkVor: 0, nkNach: 0, nkAbr: 0 };
-  const rawYd = p.steuerJahre?.[yr];
-  const isDraft = !hasOwnData && !!prevYd;
-  const yd = rawYd || (isDraft ? { ...defaultYd, miet: prevYd.miet || c.jm, nkVor: prevYd.nkVor || 0, nkNach: prevYd.nkNach || 0, nkAbr: prevYd.nkAbr || 0, wk: (prevYd.wk || []).map(w => ({ ...w })), _confirmed: [] } : defaultYd);
-
-  // Confirmed-Tracking: welche Felder wurden vom User bestätigt/bearbeitet?
-  const confirmed = new Set(yd._confirmed || (hasOwnData && !yd._confirmed ? EINNAHMEN_FIELDS : []));
-  // Wenn Jahresdaten bereits existierten (manuell eingegeben), gelten sie als bestätigt
-  const isFieldConfirmed = (field) => hasOwnData && !yd._confirmed ? true : confirmed.has(field);
-  const allConfirmed = EINNAHMEN_FIELDS.every(f => isFieldConfirmed(f));
-
-  const setYd = (f, v) => {
-    const newConfirmed = [...new Set([...(yd._confirmed || []), f])];
-    upd({ ...p, steuerJahre: { ...p.steuerJahre, [yr]: { ...yd, [f]: v, _confirmed: newConfirmed } } });
-  };
-  const confirmField = (f) => {
-    const newConfirmed = [...new Set([...(yd._confirmed || []), f])];
-    upd({ ...p, steuerJahre: { ...p.steuerJahre, [yr]: { ...yd, _confirmed: newConfirmed } } });
-  };
-  const confirmAll = () => {
-    upd({ ...p, steuerJahre: { ...p.steuerJahre, [yr]: { ...yd, _confirmed: [...EINNAHMEN_FIELDS] } } });
-  };
-
-  const addWK = () => setYd('wk', [...yd.wk, { bez: '', betrag: 0 }]);
-  const updWK = (i, f, v) => { const a = [...yd.wk]; a[i] = { ...a[i], [f]: f === 'betrag' ? parseFloat(v) || 0 : v }; setYd('wk', a); };
-  const delWK = i => setYd('wk', yd.wk.filter((_, x) => x !== i));
-  const jsk = yr - kj;
-  const afaG = jsk < 100 / p.stammdaten.afaSatz ? c.afaGeb : 0;
-  const afaS = jsk < 10 ? c.afaSA : 0;
-  const afaTot = afaG + afaS;
-  // Erbbauzins automatisch als Werbungskosten berücksichtigen (falls Erbbaurecht)
-  const erbbauzinsJahr = p.stammdaten.erbbaurecht ? (p.stammdaten.erbbauzins || 0) : 0;
-  // Darlehenszinsen automatisch als Werbungskosten (Schätzung für yr): Restschuld × Sollzins
-  const _allLoans = [...(p.darlehen || []), ...(p.isContainer ? (immobilien || []).filter(x => x.parentId === p.id).flatMap(u => u.darlehen || []) : [])];
-  const zinsenJahr = _allLoans.reduce((a, d) => a + computeYearlyInterest(d), 0);
-  const wkTot = yd.wk.reduce((a, x) => a + (x.betrag || 0), 0) + erbbauzinsJahr + zinsenJahr;
-
-  // Einnahmen nur aus bestätigten Feldern berechnen
-  const confirmedVal = (field) => isFieldConfirmed(field) ? (yd[field] || 0) : 0;
-  const ein = confirmedVal('miet') + confirmedVal('nkVor') + confirmedVal('nkNach') + confirmedVal('nkAbr');
-  const erg = allConfirmed ? ein - afaTot - wkTot : null;
-  const stEff = erg !== null ? erg * (p.stammdaten.steuersatz / 100) : null;
-  const years = []; for (let y = kj; y <= kj + 10; y++) years.push(y);
-
-  // Export-Komponente
-  const ExportView = () => {
+// Auf Modulebene gehoben (vorher in Steuer verschachtelt definiert): eine verschachtelte
+// Komponenten-Definition bekommt bei jedem Render eine neue Identität → React remountet
+// sie komplett und der copied-State ging verloren.
+const SteuerExportView = ({ p, c, yr, yd, afaG, afaS, afaTot, wkTot, ein, erg, stEff, onBack }) => {
     const s = p.stammdaten;
     const gwg = (s.grundstueckGroesse || 0) * (s.bodenrichtwert || 0);
     const ga = s.erbbaurecht ? 0 : (s.eigentumsart === 'gesamt' ? gwg : (s.teileigentumsanteil > 0 ? (s.teileigentumsanteil / 10000) * gwg : 0));
@@ -6584,8 +6454,9 @@ ${s.kaufpreisStellplatz > 0 ? `Kaufpreis Stellplatz: ${f(s.kaufpreisStellplatz)}
 
 MIETEINNAHMEN
 -------------
-Wohnfläche: ${s.wohnflaeche} qm × ${f(s.mieteProQm)}/qm
-Miete pro Monat: ${f(c.mm)}
+Wohnfläche: ${s.wohnflaeche} qm
+Kaltmiete pro Monat: ${f(s.kaltmiete || (s.wohnflaeche * (s.mieteProQm || 0)))}
+Miete pro Monat (inkl. Stellplatz/SA): ${f(c.mm)}
 Jahres-Kaltmiete: ${f(c.jm)}
 Bruttorendite: ${fp(c.rendite)}
 
@@ -6650,9 +6521,10 @@ Erstellt mit ImmoHub · ${new Date().toLocaleDateString('de-DE')}`;
                 <td className="val">{fmt(s.kaufpreisImmobilie)}</td>
                 <td className="val">{s.teileigentumsanteil || '–'}</td>
                 <td className="val">{s.wohnflaeche} qm</td>
-                <td className="val">{fmt(s.mieteProQm)}</td>
-                <td className="val">{fmt(s.wohnflaeche * s.mieteProQm)}</td>
-                <td className="val">{fmt(s.wohnflaeche * s.mieteProQm * 12)}</td>
+                {/* Kaltmiete ist das gepflegte Feld; mieteProQm nur noch Legacy-Fallback */}
+                <td className="val">{fmt(s.wohnflaeche > 0 ? ((s.kaltmiete || (s.wohnflaeche * (s.mieteProQm || 0))) / s.wohnflaeche) : 0)}</td>
+                <td className="val">{fmt(s.kaltmiete || (s.wohnflaeche * (s.mieteProQm || 0)))}</td>
+                <td className="val">{fmt((s.kaltmiete || (s.wohnflaeche * (s.mieteProQm || 0))) * 12)}</td>
               </tr>
               {s.kaufpreisStellplatz > 0 && (
                 <tr>
@@ -6776,15 +6648,72 @@ Erstellt mit ImmoHub · ${new Date().toLocaleDateString('de-DE')}`;
         <div className="export-actions">
           <button className="btn-print" onClick={handleDownload}><span className="btn-icon-sm"><IconDocument color="#fff" /></span>HTML herunterladen</button>
           <button className="btn-copy" onClick={handleCopyText}>{copied ? <><span className="btn-icon-sm"><IconCheck color="#fff" /></span>Kopiert!</> : <><span className="btn-icon-sm"><IconCopy color="#fff" /></span>Als Text kopieren</>}</button>
-          <button className="btn-back" onClick={() => setShowExport(false)}><span className="btn-icon-sm"><IconArrowLeft color="#fafafa" /></span>Zurück</button>
+          <button className="btn-back" onClick={onBack}><span className="btn-icon-sm"><IconArrowLeft color="#fafafa" /></span>Zurück</button>
         </div>
         <p className="export-hint-small"><span className="hint-icon-sm"><IconIdea color="#71717a" /></span>HTML-Datei herunterladen, im Browser öffnen und mit Strg+P als PDF drucken. Oder Text kopieren für E-Mail/Notizen.</p>
       </div>
     );
   };
 
+const Steuer = ({ p, upd, c, immobilien = [] }) => {
+  const kj = parseInt(p.stammdaten.kaufdatum?.split('-')[0]) || 2024;
+  const [yr, setYr] = useState(kj);
+  const [sec, setSec] = useState(null);
+  const [showExport, setShowExport] = useState(false);
+
+  // Vorjahres-Daten holen
+  const prevYd = p.steuerJahre?.[yr - 1] || null;
+  const hasOwnData = !!p.steuerJahre?.[yr];
+
+  // Wenn kein eigenes Jahr existiert, aber Vorjahr vorhanden → Vorjahreswerte als Draft
+  const EINNAHMEN_FIELDS = ['miet', 'nkVor', 'nkNach', 'nkAbr'];
+  const defaultYd = { wk: [], miet: c.jm, nkVor: 0, nkNach: 0, nkAbr: 0 };
+  const rawYd = p.steuerJahre?.[yr];
+  const isDraft = !hasOwnData && !!prevYd;
+  const yd = rawYd || (isDraft ? { ...defaultYd, miet: prevYd.miet || c.jm, nkVor: prevYd.nkVor || 0, nkNach: prevYd.nkNach || 0, nkAbr: prevYd.nkAbr || 0, wk: (prevYd.wk || []).map(w => ({ ...w })), _confirmed: [] } : defaultYd);
+
+  // Confirmed-Tracking: welche Felder wurden vom User bestätigt/bearbeitet?
+  const confirmed = new Set(yd._confirmed || (hasOwnData && !yd._confirmed ? EINNAHMEN_FIELDS : []));
+  // Wenn Jahresdaten bereits existierten (manuell eingegeben), gelten sie als bestätigt
+  const isFieldConfirmed = (field) => hasOwnData && !yd._confirmed ? true : confirmed.has(field);
+  const allConfirmed = EINNAHMEN_FIELDS.every(f => isFieldConfirmed(f));
+
+  const setYd = (f, v) => {
+    const newConfirmed = [...new Set([...(yd._confirmed || []), f])];
+    upd({ ...p, steuerJahre: { ...p.steuerJahre, [yr]: { ...yd, [f]: v, _confirmed: newConfirmed } } });
+  };
+  const confirmField = (f) => {
+    const newConfirmed = [...new Set([...(yd._confirmed || []), f])];
+    upd({ ...p, steuerJahre: { ...p.steuerJahre, [yr]: { ...yd, _confirmed: newConfirmed } } });
+  };
+  const confirmAll = () => {
+    upd({ ...p, steuerJahre: { ...p.steuerJahre, [yr]: { ...yd, _confirmed: [...EINNAHMEN_FIELDS] } } });
+  };
+
+  const addWK = () => setYd('wk', [...yd.wk, { bez: '', betrag: 0 }]);
+  const updWK = (i, f, v) => { const a = [...yd.wk]; a[i] = { ...a[i], [f]: f === 'betrag' ? parseFloat(v) || 0 : v }; setYd('wk', a); };
+  const delWK = i => setYd('wk', yd.wk.filter((_, x) => x !== i));
+  const jsk = yr - kj;
+  const afaG = jsk < 100 / p.stammdaten.afaSatz ? c.afaGeb : 0;
+  const afaS = jsk < 10 ? c.afaSA : 0;
+  const afaTot = afaG + afaS;
+  // Erbbauzins automatisch als Werbungskosten berücksichtigen (falls Erbbaurecht)
+  const erbbauzinsJahr = p.stammdaten.erbbaurecht ? (p.stammdaten.erbbauzins || 0) : 0;
+  // Darlehenszinsen automatisch als Werbungskosten (Schätzung für yr): Restschuld × Sollzins
+  const _allLoans = [...(p.darlehen || []), ...(p.isContainer ? (immobilien || []).filter(x => x.parentId === p.id).flatMap(u => u.darlehen || []) : [])];
+  const zinsenJahr = _allLoans.reduce((a, d) => a + computeYearlyInterest(d), 0);
+  const wkTot = yd.wk.reduce((a, x) => a + (x.betrag || 0), 0) + erbbauzinsJahr + zinsenJahr;
+
+  // Einnahmen nur aus bestätigten Feldern berechnen
+  const confirmedVal = (field) => isFieldConfirmed(field) ? (yd[field] || 0) : 0;
+  const ein = confirmedVal('miet') + confirmedVal('nkVor') + confirmedVal('nkNach') + confirmedVal('nkAbr');
+  const erg = allConfirmed ? ein - afaTot - wkTot : null;
+  const stEff = erg !== null ? erg * (p.stammdaten.steuersatz / 100) : null;
+  const years = []; for (let y = kj; y <= kj + 10; y++) years.push(y);
+
+  // Export-Komponente
   if (showExport) {
-    return <ExportView />;
+    return <SteuerExportView p={p} c={c} yr={yr} yd={yd} afaG={afaG} afaS={afaS} afaTot={afaTot} wkTot={wkTot} ein={ein} erg={erg} stEff={stEff} onBack={() => setShowExport(false)} />;
   }
 
   return (
@@ -7036,7 +6965,7 @@ const Dashboard = ({ immobilien, onSelectImmo, aktiveBeteiligte = [], beteiligte
       { key: 'adresse', weight: 1 },
       { key: 'kaufpreisImmobilie', weight: 1 },
       { key: 'wohnflaeche', weight: 1 },
-      { key: 'mieteProQm', weight: 1 },
+      { key: 'kaltmiete', weight: 1 }, // vorher mieteProQm (Legacy, im UI nicht mehr gepflegt)
       { key: 'kaufdatum', weight: 0.5 },
       { key: 'baujahr', weight: 0.5 },
       { key: 'eigenkapitalAnteil', weight: 0.5 },
@@ -7063,13 +6992,13 @@ const Dashboard = ({ immobilien, onSelectImmo, aktiveBeteiligte = [], beteiligte
     // Jahres-Kaltmiete: Kaltmiete + Stellplatz + Sonderausstattung (ohne NK-Vorauszahlung)
     const jm = ((s.kaltmiete || 0) + (s.mieteStellplatz || 0) + (s.mieteSonderausstattung || 0)) * 12;
     const rendite = kp > 0 ? jm / kp : 0;
-    const ek = ak * (s.eigenkapitalAnteil / 100);
+    const ek = ak * ((s.eigenkapitalAnteil || 0) / 100);
     const fkTheo = ak - ek; // theoretischer FK-Bedarf
     const darlehen = immo.darlehen || [];
     const _childLoans = immo.isContainer ? immobilien.filter(x => x.parentId === immo.id).flatMap(u => u.darlehen || []) : [];
     const _allLoans = [...darlehen, ..._childLoans];
-    const fk = _allLoans.length > 0 ? _allLoans.reduce((sum, d) => sum + (d.restschuld || d.betrag || 0), 0) : fkTheo;
-    const ann = fkTheo * ((s.zinssatz + s.tilgung) / 100);
+    const fk = _allLoans.length > 0 ? loansRest(_allLoans) : fkTheo;
+    const ann = fkTheo * (((s.zinssatz || 0) + (s.tilgung || 0)) / 100);
     const gwg = (s.grundstueckGroesse || 0) * (s.bodenrichtwert || 0);
     const ga = s.erbbaurecht ? 0 : (s.eigentumsart === 'gesamt' ? gwg : (s.teileigentumsanteil > 0 ? (s.teileigentumsanteil / 10000) * gwg : 0));
     const afaBasis = ak - ga;
@@ -7093,7 +7022,7 @@ const Dashboard = ({ immobilien, onSelectImmo, aktiveBeteiligte = [], beteiligte
     const zinsbindungWarning = getZinsbindungWarning(immo);
     
     // Monatliche Darlehensrate berechnen
-    const darlehensRate = _allLoans.reduce((sum, d) => sum + (d.monatsrate > 0 ? d.monatsrate : (d.betrag > 0 && d.zinssatz > 0 ? d.betrag * ((d.zinssatz + (d.tilgung || 0)) / 100) / 12 : 0)), 0);
+    const darlehensRate = loansRate(_allLoans);
     
     const _kids = immo.isContainer ? immobilien.filter(x => x.parentId === immo.id) : [];
     const agg = _kids.length > 0 ? cmAgg(immo, _kids) : null;
@@ -7419,21 +7348,16 @@ const Dashboard = ({ immobilien, onSelectImmo, aktiveBeteiligte = [], beteiligte
           <h3><span className="widget-icon"><IconTrend color="#10b981" /></span>Cashflow-Übersicht</h3>
           <div className="cashflow-container">
             {(() => {
-              // Berechne Darlehensraten aus allen Immobilien
+              // Gleiche Datenbasis wie die Kachel "Darlehensrate p.a.": i.darlehensRate
+              // (inkl. Einheiten-Darlehen bei Gebäuden, anteilsskaliert) statt eigener Rechnung
               let gesamtDarlehensrate = 0;
               filtered.forEach(i => {
-                const darlehen = i.darlehen || [];
-                darlehen.forEach(d => {
-                  if (d.monatsrate > 0) {
-                    gesamtDarlehensrate += d.monatsrate;
-                  } else if (d.betrag > 0 && d.zinssatz > 0) {
-                    gesamtDarlehensrate += d.betrag * ((d.zinssatz + (d.tilgung || 0)) / 100) / 12;
-                  }
-                });
-                // Fallback auf Legacy-Felder
-                if (darlehen.length === 0 && i.fk > 0) {
+                if (i.darlehensRate > 0) {
+                  gesamtDarlehensrate += i.darlehensRate;
+                } else if ((i.darlehen || []).length === 0 && i.fk > 0) {
+                  // Fallback: theoretische Rate aus Stammdaten, wenn (noch) kein Darlehen erfasst
                   const s = i.stammdaten;
-                  gesamtDarlehensrate += i.fk * ((s.zinssatz + s.tilgung) / 100) / 12;
+                  gesamtDarlehensrate += i.fk * (((s.zinssatz || 0) + (s.tilgung || 0)) / 100) / 12;
                 }
               });
               
@@ -7785,7 +7709,7 @@ const OnboardingTour = ({ onComplete }) => {
 };
 
 // Haupt-App (Core ohne Auth)
-function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuComponent, CloudStatusComponent }) {
+function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, userMenu, cloudStatusEl }) {
   const [saved, setSaved] = useState(initialData || []);
   const [curr, setCurr] = useState(null);
   const [tab, setTab] = useState('dash');
@@ -7800,22 +7724,28 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
   const [theme, setTheme] = useState(() => localStorage.getItem('immoTheme') || 'dark');
   const [history, setHistory] = useState([]);
   const [redoHistory, setRedoHistory] = useState([]);
-  const [autoSaveTimer, setAutoSaveTimer] = useState(null);
+  const autoSaveTimerRef = useRef(null);
   const [showAutoSaved, setShowAutoSaved] = useState(false);
   const [validationErrors, setValidationErrors] = useState({});
   const [toast, setToast] = useState(null);
   const [dashFilter, setDashFilter] = useState('alle');
 
-  // Sync data to parent when changed
+  // Sync data to parent when changed (erster Lauf nach Mount wird übersprungen,
+  // sonst würde direkt nach dem Laden ein unnötiger Voll-Save ausgelöst)
+  const didMountSyncRef = useRef(false);
   useEffect(() => {
+    if (!didMountSyncRef.current) { didMountSyncRef.current = true; return; }
     if (onDataChange) {
       onDataChange(saved, beteiligte);
     }
   }, [saved, beteiligte]);
 
-  // Update from parent
+  // Update from parent — Referenzvergleich genügt: der Parent reicht bei eigenen Änderungen
+  // exakt das Array zurück, das wir ihm via onDataChange gegeben haben; nur ein frisch
+  // geladenes Portfolio hat eine neue Referenz. (Vorher: doppeltes JSON.stringify des
+  // Gesamtportfolios bei jedem Render — teuer bei Base64-Dokumenten.)
   useEffect(() => {
-    if (initialData && JSON.stringify(initialData) !== JSON.stringify(saved)) {
+    if (initialData && initialData !== saved) {
       setSaved(initialData);
     }
   }, [initialData]);
@@ -7952,17 +7882,17 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
 
   const onAssignEinheit = (unitId, parentId) => {
     const updated = saved.map(x => x.id === unitId ? { ...x, parentId, isContainer: false } : x);
-    setSaved(updated); save(updated);
+    setSaved(updated);
   };
 
   const onDetachEinheit = (unitId) => {
     const updated = saved.map(x => x.id === unitId ? { ...x, parentId: null } : x);
-    setSaved(updated); save(updated);
+    setSaved(updated);
   };
 
   const onUpdateUnit = (unitId, partial) => {
     const updated = saved.map(x => x.id === unitId ? { ...x, stammdaten: { ...x.stammdaten, ...partial } } : x);
-    setSaved(updated); save(updated);
+    setSaved(updated);
   };
 
   const onSplitToUnit = (containerId) => {
@@ -7987,7 +7917,7 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
       beteiligungen: [],
     };
     const updated = saved.map(x => x.id === containerId ? containerReset : x).concat(newUnit);
-    setSaved(updated); save(updated);
+    setSaved(updated);
     setCurr(containerReset);
   };
 
@@ -8014,7 +7944,7 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
     const exists = saved.find(x => x.id === containerId);
     let updated = exists ? saved.map(x => x.id === containerId ? containerShell : x) : [...saved, containerShell];
     updated = [...updated, newUnit];
-    setSaved(updated); save(updated);
+    setSaved(updated);
     setCurr(containerShell);
     showToast('success', 'Bestehende Wohnung wurde automatisch als Einheit angelegt.');
   };
@@ -8046,6 +7976,18 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
       const target = saved.find(x => x.id === deleteConfirm);
       const toRemove = new Set([deleteConfirm]);
       if (target?.isContainer) saved.filter(x => x.parentId === deleteConfirm).forEach(ch => toRemove.add(ch.id));
+      // Sicherheitsnetz: gelöschte Datensätze lokal sichern (letzte 3 Löschungen),
+      // da der Cloud-Stand 1,5s später unwiederbringlich überschrieben ist.
+      // Wiederherstellung: aus localStorage 'immohub_geloescht' einen Eintrag als
+      // .json-Datei speichern (hat bereits das Import-Format {immobilien:[...]}) und
+      // über "Daten verwalten → Importieren" einspielen — der Import mergt, bestehende
+      // Objekte bleiben erhalten.
+      try {
+        const removed = saved.filter(x => toRemove.has(x.id));
+        const prevBackups = JSON.parse(localStorage.getItem('immohub_geloescht') || '[]');
+        const slim = removed.map(x => ({ ...x, dokumente: [] })); // ohne Base64-Anhänge (Platz)
+        localStorage.setItem('immohub_geloescht', JSON.stringify([...prevBackups.slice(-2), { geloeschtAm: new Date().toISOString(), immobilien: slim }]));
+      } catch (e) { console.warn('Lösch-Backup fehlgeschlagen', e); }
       setSaved(saved.filter(x => !toRemove.has(x.id)));
       if (curr && toRemove.has(curr.id)) setCurr(null);
       setDeleteConfirm(null);
@@ -8059,25 +8001,26 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
     setHistory(prev => [...prev.slice(-19), curr]);
     // Redo-History leeren bei neuer Änderung
     setRedoHistory([]);
-    
+
     setCurr(p);
-    
+
     // Validierung bei Änderung
     const errors = validate(p.stammdaten);
     setValidationErrors(errors);
-    
+
     // Auto-Save für gespeicherte Immobilien (mit Debounce)
     if (p.saved) {
-      if (autoSaveTimer) clearTimeout(autoSaveTimer);
-      const timer = setTimeout(() => {
+      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = setTimeout(() => {
         const validationErrors = validate(p.stammdaten);
         if (Object.keys(validationErrors).length === 0) {
-          setSaved(saved.map(x => x.id === p.id ? p : x));
+          // Funktionales Update: das zum Tastendruck eingefrorene `saved` wäre veraltet
+          // und würde zwischenzeitliche Änderungen (z.B. an Einheiten) überschreiben
+          setSaved(prev => prev.map(x => x.id === p.id ? p : x));
           setShowAutoSaved(true);
           setTimeout(() => setShowAutoSaved(false), 2000);
         }
       }, 1500);
-      setAutoSaveTimer(timer);
     }
   };
   
@@ -8120,25 +8063,32 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
     if (updatedCurr) setCurr(updatedCurr);
   };
 
-  // Undo Funktion
+  // Undo Funktion (persistiert den zurückgenommenen Stand auch in saved/Cloud,
+  // sonst wäre das Undo nach einem Reload stillschweigend wieder weg)
   const onUndo = () => {
     if (history.length > 0) {
+      // Pendenten Auto-Save stoppen — sonst schreibt er den gerade zurückgenommenen
+      // Stand 1,5s später wieder nach saved/Cloud
+      if (autoSaveTimerRef.current) { clearTimeout(autoSaveTimerRef.current); autoSaveTimerRef.current = null; }
       const prev = history[history.length - 1];
       setHistory(history.slice(0, -1));
       // Aktuellen State in Redo-History speichern
       setRedoHistory(prevRedo => [...prevRedo, curr]);
       setCurr(prev);
+      if (prev?.saved) setSaved(sPrev => sPrev.map(x => x.id === prev.id ? prev : x));
     }
   };
-  
+
   // Redo Funktion
   const onRedo = () => {
     if (redoHistory.length > 0) {
+      if (autoSaveTimerRef.current) { clearTimeout(autoSaveTimerRef.current); autoSaveTimerRef.current = null; }
       const next = redoHistory[redoHistory.length - 1];
       setRedoHistory(redoHistory.slice(0, -1));
       // Aktuellen State in Undo-History speichern
       setHistory(prev => [...prev, curr]);
       setCurr(next);
+      if (next?.saved) setSaved(sPrev => sPrev.map(x => x.id === next.id ? next : x));
     }
   };
   
@@ -8157,7 +8107,6 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
         saved: true
       }))];
       setSaved(updatedSaved);
-      save(updatedSaved);
       
       // Erste importierte Immobilie zur Bearbeitung öffnen
       if (newImmobilien.length > 0) {
@@ -9354,7 +9303,7 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
           <div className="logo">
             <span className="logo-icon"><IconObjekt color="#6366f1" /></span>
             <span className="logo-text"><span className="logo-immo">Immo</span><span className="logo-hub">Hub</span><span style={{marginLeft:'10px',padding:'2px 8px',background:'#f59e0b',color:'#000',borderRadius:'10px',fontSize:'10px',fontWeight:700}}>v8 BETA</span></span>
-            {CloudStatusComponent && <CloudStatusComponent />}
+            {cloudStatusEl}
           </div>
           <div className="hdr-acts">
             {(history.length > 0 || redoHistory.length > 0) && (
@@ -9374,7 +9323,7 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
                 {theme === 'dark' ? <IconSun color="#f59e0b" /> : <IconMoon color="#6366f1" />}
               </span>
             </button>
-            {UserMenuComponent && <UserMenuComponent />}
+            {userMenu}
           </div>
         </div>
       </header>
@@ -9433,7 +9382,14 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
         {tab === 'dash' ? (
           <Dashboard 
             immobilien={saved} 
-            onSelectImmo={(i) => { setCurr({...i}); setTab('stamm'); }} 
+            onSelectImmo={(i) => {
+              // Original aus `saved` laden — das Dashboard-Objekt ist mit Berechnungs-
+              // feldern angereichert (kp/jm/fk/anteil, teils anteilsskaliert); die dürfen
+              // nicht via Auto-Save dauerhaft in die Cloud geschrieben werden
+              const orig = saved.find(x => x.id === i.id);
+              setCurr(orig ? { ...orig } : { ...i });
+              setTab('stamm');
+            }}
             aktiveBeteiligte={aktiveBeteiligte} 
             beteiligte={beteiligte}
             filter={dashFilter}
@@ -9446,7 +9402,6 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
                 const [dragged] = newSaved.splice(draggedIdx, 1);
                 newSaved.splice(targetIdx, 0, dragged);
                 setSaved(newSaved);
-                save(newSaved);
               }
             }}
           />
@@ -9466,7 +9421,22 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, UserMenuCom
         )}
       </main>
 
-      {modal && <Modal items={saved} onSelect={onSelect} onNew={onNew} onClose={() => setModal(false)} onDel={onDel} onOpenImport={() => { setModal(false); setImportModal(true); }} onDuplicate={(i) => {
+      {modal && <Modal items={saved} onSelect={onSelect} onNew={onNew} onClose={() => setModal(false)} onDel={onDel} onOpenImport={() => { setModal(false); setImportModal(true); }} onRestore={(immos) => {
+        // Backup-Restore über den regulären State-/Cloud-Pfad (der alte Weg über
+        // localStorage['immoData'] wurde von niemandem gelesen und war wirkungslos).
+        // MERGE statt Ersetzen: gleiche IDs werden überschrieben, neue ergänzt, nicht
+        // enthaltene Objekte bleiben erhalten — so ist auch ein Teil-Backup
+        // (z.B. das Lösch-Backup) gefahrlos einspielbar.
+        if (autoSaveTimerRef.current) { clearTimeout(autoSaveTimerRef.current); autoSaveTimerRef.current = null; }
+        setSaved(prevSaved => {
+          const byId = new Map(prevSaved.map(x => [x.id, x]));
+          immos.map(migrateImmo).forEach(i => byId.set(i.id, { ...i, saved: true }));
+          return Array.from(byId.values());
+        });
+        setCurr(null);
+        setModal(false);
+        showToast('success', `${immos.length} Immobilie(n) aus Backup eingespielt (bestehende bleiben erhalten)`);
+      }} onDuplicate={(i) => {
         const dup = {
           ...JSON.parse(JSON.stringify(i)),
           id: Date.now(),
@@ -9745,6 +9715,7 @@ const ImmoHubApp = () => {
   const [beteiligte, setBeteiligte] = useState([]);
   const [cloudStatus, setCloudStatus] = useState("saved");
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
   const saveTimeoutRef = useRef(null);
 
   // Load portfolio on mount
@@ -9755,21 +9726,28 @@ const ImmoHubApp = () => {
 
   const loadPortfolio = async () => {
     setLoading(true);
+    setLoadError(null);
     const { data, error } = await supabase.from("portfolios").select("*").eq("user_id", user.id).single();
     if (data) {
       setPortfolioId(data.id);
-      setImmobilien(data.data?.immobilien || []);
+      // Migration: bei Altdatensätzen neue Felder mit Defaults auffüllen
+      setImmobilien((data.data?.immobilien || []).map(migrateImmo));
       setBeteiligte(data.data?.beteiligte || []);
-    } else if (!error || error.message?.includes("no rows")) {
-      // Create new portfolio
-      const { data: newData } = await supabase.from("portfolios").insert({ user_id: user.id, name: "Mein Portfolio", data: { immobilien: [], beteiligte: [] } }).select().single();
+    } else if (error) {
+      // HTTP-/Netzwerkfehler NICHT als "kein Portfolio" werten — sonst entsteht ein leeres Duplikat
+      setLoadError(error.message || 'Portfolio konnte nicht geladen werden');
+    } else {
+      // Bestätigt leer: wirklich noch kein Portfolio vorhanden → neu anlegen
+      const { data: newData, error: insErr } = await supabase.from("portfolios").insert({ user_id: user.id, name: "Mein Portfolio", data: { immobilien: [], beteiligte: [] } }).select().single();
       if (newData) setPortfolioId(newData.id);
+      else setLoadError(insErr?.message || 'Portfolio konnte nicht angelegt werden');
     }
     setLoading(false);
   };
 
   const savePortfolio = async (newImmobilien, newBeteiligte) => {
-    if (!portfolioId) return;
+    if (saveTimeoutRef.current) { clearTimeout(saveTimeoutRef.current); saveTimeoutRef.current = null; }
+    if (!portfolioId) { setCloudStatus("error"); return; } // nie still verwerfen
     setCloudStatus("saving");
     const { error } = await supabase.from("portfolios").update({ data: { immobilien: newImmobilien, beteiligte: newBeteiligte }, updated_at: new Date().toISOString() }).eq("id", portfolioId).select().single();
     setCloudStatus(error ? "error" : "saved");
@@ -9783,15 +9761,39 @@ const ImmoHubApp = () => {
     saveTimeoutRef.current = setTimeout(() => savePortfolio(newImmobilien, newBeteiligte), 1500);
   };
 
+  // Warnung beim Schließen/Reload, solange ein Save aussteht oder fehlgeschlagen ist
+  useEffect(() => {
+    const onBeforeUnload = (e) => {
+      if (saveTimeoutRef.current || cloudStatus === 'saving' || cloudStatus === 'error') {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [cloudStatus]);
+
   if (loading) return <LoadingScreen />;
+
+  if (loadError) return (
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0f172a', color: '#e2e8f0', fontFamily: 'sans-serif' }}>
+      <div style={{ textAlign: 'center', maxWidth: 420, padding: 24 }}>
+        <div style={{ fontSize: 40, marginBottom: 12 }}>⚠️</div>
+        <h2 style={{ margin: '0 0 8px' }}>Portfolio konnte nicht geladen werden</h2>
+        <p style={{ color: '#94a3b8', fontSize: 14, marginBottom: 20 }}>{loadError}</p>
+        <button onClick={loadPortfolio} style={{ padding: '10px 24px', borderRadius: 8, border: 'none', background: '#6366f1', color: '#fff', fontSize: 15, cursor: 'pointer', marginRight: 8 }}>Erneut versuchen</button>
+        <button onClick={signOut} style={{ padding: '10px 24px', borderRadius: 8, border: '1px solid #334155', background: 'transparent', color: '#94a3b8', fontSize: 15, cursor: 'pointer' }}>Abmelden</button>
+      </div>
+    </div>
+  );
 
   return (
     <ImmoHubCore
       initialData={immobilien}
       initialBeteiligte={beteiligte}
       onDataChange={handleDataChange}
-      UserMenuComponent={() => <UserMenu user={user} onSignOut={signOut} />}
-      CloudStatusComponent={() => <CloudStatus status={cloudStatus} />}
+      userMenu={<UserMenu user={user} onSignOut={signOut} />}
+      cloudStatusEl={<CloudStatus status={cloudStatus} />}
     />
   );
 };
