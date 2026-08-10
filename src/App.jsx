@@ -247,7 +247,7 @@ const fmtPlain = (v) => new Intl.NumberFormat('de-DE', { minimumFractionDigits: 
 // Verwendet Monatsrate falls vorhanden, sonst Annuität aus zinssatz+tilgung.
 const computeYearlyInterest = (d) => {
   if (!d || !d.betrag || !d.zinssatz) return 0;
-  const start = d.restschuld > 0 ? d.restschuld : d.betrag;
+  const start = currentRestschuld(d);
   const annualRate = (d.zinssatz || 0) / 100;
   const modus = d.tilgungsrhythmus || 'monatlich';
   const periods = modus === 'jaehrlich' ? 1 : (modus === 'quartalsweise' ? 4 : 12);
@@ -981,7 +981,7 @@ const createEmpty = () => ({
   notizen: '', // Freitext-Notizen
   dokumente: [], // Array von { name, url, typ }
   beteiligungen: [], // Array von { beteiligterID, anteil }
-  darlehen: [], // Array von { name, institut, betrag, restschuld, zinssatz, effektivzins, tilgung, monatsrate, sondertilgung, abschluss, ersteRate, laufzeit, zinsbindungJahre, zinsbindungEnde, kontonummer }
+  darlehen: [], // Array von { name, institut, betrag, restschuld, restschuldDatum (Stichtag der Restschuld → currentRestschuld() schreibt annuitätisch bis heute fort), zinssatz, effektivzins, tilgung, monatsrate, sondertilgung, abschluss, ersteRate, laufzeit, zinsbindungJahre, zinsbindungEnde, kontonummer }
   miethistorie: [], // Array von { mieter, von, bis, kaltmiete, nebenkosten, stellplatz, sonstiges, grund }
   erinnerungen: [], // Array von { datum, titel, beschreibung, erledigt }
   // === Hierarchie (Hybrid-Modell, eingeführt v7.7) ===
@@ -1422,7 +1422,112 @@ const Acc = ({ icon, title, sum, badge, open, toggle, color = '#3b82f6', disable
 );
 
 // Modal
-const Modal = ({ items, onSelect, onNew, onClose, onDel, onOpenImport, onDuplicate, onRestore }) => {
+
+// Geführter Assistent: bestehende, freie Objekte einem Gebäude zuordnen.
+// 3 Schritte: Gebäude wählen/anlegen → Objekte auswählen → Zusammenfassung & Anwenden.
+// Die eigentliche Zuordnung (parentId setzen / Container anlegen) macht onApply in ImmoHubCore.
+const AssignWizard = ({ immobilien = [], onApply, onClose }) => {
+  const containers = immobilien.filter(x => x.isContainer);
+  const freie = immobilien.filter(x => !x.isContainer && !x.parentId && x.saved);
+  const [step, setStep] = useState(1);
+  const [mode, setMode] = useState(containers.length > 0 ? 'existing' : 'new');
+  const [targetId, setTargetId] = useState(containers[0]?.id ?? null);
+  const [neu, setNeu] = useState({ name: '', adresse: '', eigentumsart: 'gesamt' });
+  const [selected, setSelected] = useState(() => new Set());
+
+  const toggle = (id) => setSelected(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const target = containers.find(x => x.id === targetId);
+  const targetName = mode === 'new' ? (neu.name || 'Neues Gebäude') : (target?.stammdaten?.name || '—');
+  const canNext1 = mode === 'new' ? (neu.name.trim().length > 0) : !!targetId;
+  const rowStyle = { display:'flex', alignItems:'center', gap:'10px', padding:'9px 10px', border:'1px solid var(--border)', borderRadius:'8px', cursor:'pointer', fontSize:'13px' };
+
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal" style={{maxWidth:'560px'}} onClick={e => e.stopPropagation()}>
+        <div className="modal-h">
+          <h2><span className="modal-icon"><IconHome color="#6366f1" /></span>Gebäude-Zuordnung ({step}/3)</h2>
+          <button onClick={onClose}>×</button>
+        </div>
+        <div className="modal-b" style={{display:'flex', flexDirection:'column', gap:'10px'}}>
+          {step === 1 && (
+            <>
+              <p style={{fontSize:'13px', color:'var(--text-muted)', margin:'0 0 4px'}}>Zu welchem Gebäude sollen Objekte zugeordnet werden?</p>
+              {containers.length > 0 && (
+                <label style={{...rowStyle, borderColor: mode==='existing' ? '#6366f1' : 'var(--border)'}}>
+                  <input type="radio" checked={mode==='existing'} onChange={() => setMode('existing')} style={{accentColor:'#6366f1'}} />
+                  <span>Bestehendes Gebäude</span>
+                </label>
+              )}
+              {mode === 'existing' && containers.map(c => (
+                <label key={c.id} style={{...rowStyle, marginLeft:'22px', borderColor: targetId===c.id ? '#6366f1' : 'var(--border)'}}>
+                  <input type="radio" checked={targetId===c.id} onChange={() => setTargetId(c.id)} style={{accentColor:'#6366f1'}} />
+                  <span style={{flex:1}}><b>{c.stammdaten?.name || 'Gebäude'}</b>{c.stammdaten?.adresse ? <span style={{color:'var(--text-muted)'}}> · {c.stammdaten.adresse}</span> : null}</span>
+                  <span style={{fontSize:'11px', color:'var(--text-muted)'}}>{immobilien.filter(x => x.parentId === c.id).length} Einheiten</span>
+                </label>
+              ))}
+              <label style={{...rowStyle, borderColor: mode==='new' ? '#6366f1' : 'var(--border)'}}>
+                <input type="radio" checked={mode==='new'} onChange={() => setMode('new')} style={{accentColor:'#6366f1'}} />
+                <span>Neues Gebäude anlegen</span>
+              </label>
+              {mode === 'new' && (
+                <div style={{marginLeft:'22px', display:'flex', flexDirection:'column', gap:'8px'}}>
+                  <Input label="Name des Gebäudes" value={neu.name} onChange={v => setNeu({...neu, name: v})} type="text" ph="z.B. MFH Musterstraße 12" />
+                  <Input label="Adresse" value={neu.adresse} onChange={v => setNeu({...neu, adresse: v})} type="text" ph="Straße, PLZ Ort" />
+                  <div style={{display:'flex', gap:'8px'}}>
+                    <label style={{...rowStyle, flex:1, borderColor: neu.eigentumsart==='gesamt' ? '#6366f1' : 'var(--border)'}}>
+                      <input type="radio" checked={neu.eigentumsart==='gesamt'} onChange={() => setNeu({...neu, eigentumsart:'gesamt'})} style={{accentColor:'#6366f1'}} />
+                      <span style={{fontSize:'12px'}}>Ein Objekt, mehrere Wohnungen</span>
+                    </label>
+                    <label style={{...rowStyle, flex:1, borderColor: neu.eigentumsart==='weg' ? '#6366f1' : 'var(--border)'}}>
+                      <input type="radio" checked={neu.eigentumsart==='weg'} onChange={() => setNeu({...neu, eigentumsart:'weg'})} style={{accentColor:'#6366f1'}} />
+                      <span style={{fontSize:'12px'}}>Eigentumswohnungen (WEG)</span>
+                    </label>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+          {step === 2 && (
+            <>
+              <p style={{fontSize:'13px', color:'var(--text-muted)', margin:'0 0 4px'}}>Welche Objekte gehören zu <b>{targetName}</b>? ({selected.size} ausgewählt)</p>
+              {freie.length === 0 && <p style={{fontSize:'13px'}}>Keine freien Objekte vorhanden — alle sind bereits zugeordnet oder selbst Gebäude.</p>}
+              <div style={{maxHeight:'320px', overflowY:'auto', display:'flex', flexDirection:'column', gap:'6px'}}>
+                {freie.map(o => (
+                  <label key={o.id} style={{...rowStyle, borderColor: selected.has(o.id) ? '#10b981' : 'var(--border)', background: selected.has(o.id) ? 'rgba(16,185,129,0.06)' : 'transparent'}}>
+                    <input type="checkbox" checked={selected.has(o.id)} onChange={() => toggle(o.id)} style={{accentColor:'#10b981'}} />
+                    <span style={{flex:1}}><b>{o.stammdaten?.name || 'Objekt'}</b>{o.stammdaten?.adresse ? <span style={{color:'var(--text-muted)'}}> · {o.stammdaten.adresse}</span> : null}</span>
+                    <span style={{fontSize:'11px', color:'var(--text-muted)'}}>{(o.stammdaten?.wohnflaeche || 0) > 0 ? `${o.stammdaten.wohnflaeche} qm` : ''}{(o.stammdaten?.kaltmiete || 0) > 0 ? ` · ${fmt(o.stammdaten.kaltmiete)}/M.` : ''}</span>
+                  </label>
+                ))}
+              </div>
+            </>
+          )}
+          {step === 3 && (
+            <>
+              <p style={{fontSize:'13px', margin:0}}>Zusammenfassung:</p>
+              <div style={{padding:'12px', border:'1px solid var(--border)', borderRadius:'8px', fontSize:'13px', display:'flex', flexDirection:'column', gap:'6px'}}>
+                <span>{mode === 'new' ? '🏢 Neues Gebäude' : '🏢 Gebäude'}: <b>{targetName}</b>{mode === 'new' && neu.adresse ? ` · ${neu.adresse}` : ''}</span>
+                <span>➕ {selected.size} Objekt(e) werden als Einheiten zugeordnet:</span>
+                {[...selected].map(id => { const o = freie.find(x => x.id === id); return o ? <span key={id} style={{marginLeft:'16px', color:'var(--text-muted)'}}>• {o.stammdaten?.name || 'Objekt'}</span> : null; })}
+                <span style={{fontSize:'11px', color:'var(--text-muted)', marginTop:'4px'}}>Alle Werte der Objekte bleiben erhalten. In der Übersicht erscheint künftig das Gebäude als eine Kachel mit den Summen; die Zuordnung lässt sich pro Einheit jederzeit wieder lösen.</span>
+              </div>
+            </>
+          )}
+        </div>
+        <div className="modal-f" style={{display:'flex', flexDirection:'row', gap:'8px', justifyContent:'space-between'}}>
+          <button className="btn-sec" onClick={() => step === 1 ? onClose() : setStep(step - 1)}>{step === 1 ? 'Abbrechen' : '← Zurück'}</button>
+          {step < 3 ? (
+            <button className="btn-pri" disabled={step === 1 ? !canNext1 : selected.size === 0} onClick={() => setStep(step + 1)}>Weiter →</button>
+          ) : (
+            <button className="btn-pri" onClick={() => onApply({ mode, targetId, neu, unitIds: [...selected] })}>Zuordnung anwenden</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const Modal = ({ items, onSelect, onNew, onClose, onDel, onOpenImport, onDuplicate, onRestore, onOpenAssign }) => {
   const [showDataModal, setShowDataModal] = useState(false);
   
   return (
@@ -1468,6 +1573,7 @@ const Modal = ({ items, onSelect, onNew, onClose, onDel, onOpenImport, onDuplica
         </div>
         <div className="modal-f2">
           <button className="btn-data" onClick={() => setShowDataModal(true)}><span className="btn-data-icon"><IconSave color="#6366f1" /></span>Daten verwalten</button>
+          {onOpenAssign && <button className="btn-data" onClick={onOpenAssign}><span className="btn-data-icon"><IconHome color="#6366f1" /></span>Gebäude-Zuordnung (Assistent)</button>}
         </div>
       </div>
       {showDataModal && <DataModal items={items} onClose={() => setShowDataModal(false)} onRestore={onRestore} />}
@@ -1757,6 +1863,8 @@ SCHRITT 1: Erkenne den Dokumenttyp:
 - "nebenkostenabrechnung" - Nebenkostenabrechnung, Hausgeldabrechnung
 - "grundbuch" - Grundbuchauszug, Flurkarte
 - "auflistung" - Vermögensübersicht, Aufstellung mehrerer Immobilien, Portfolio-Übersicht (MEHRERE Immobilien!)
+- "steuerbescheid" - Einkommensteuerbescheid, Bescheid über die gesonderte und einheitliche Feststellung von Einkünften, Feststellungserklärung, Anlage V, Aufstellung des Steuerberaters (steuerliche JAHRESDATEN zu Vermietung & Verpachtung)
+- "energieausweis" - Energieausweis (Verbrauchs- oder Bedarfsausweis)
 - "sonstiges" - Andere Dokumente
 
 SCHRITT 2: Extrahiere die relevanten Felder je nach Dokumenttyp.
@@ -1771,6 +1879,12 @@ WICHTIG - DARLEHEN:
 - Jedes Darlehen hat: name, institut, betrag, zinssatz, tilgung, monatsrate, laufzeit, zinsbindungJahre, etc.
 - Bei einer Darlehensübersicht: JEDES Darlehen als separates Objekt im Array!
 
+WICHTIG - STEUERDOKUMENTE (steuerbescheid):
+- Bei Steuerbescheiden/Feststellungserklärungen/Anlage V: Erfasse die JAHRESDATEN je Immobilie im Array "steuerdaten"
+- Jedes Jahr enthält: jahr, mieteinnahmen (Jahres-Kaltmiete/Einnahmen aus V+V), nkVorauszahlung (umgelegte Nebenkosten/Umlagen), werbungskosten (Array mit einzelnen Positionen wie Schuldzinsen, AfA laut Bescheid, Erhaltungsaufwand, Verwaltungskosten, Grundsteuer, Versicherung), einkuenfteVuV (festgestellte Einkünfte aus Vermietung und Verpachtung)
+- Bei mehreren Objekten im Bescheid: jedes Objekt als eigene Immobilie mit eigenen steuerdaten
+- Die AfA aus dem Bescheid als Werbungskosten-Position "AfA laut Bescheid" erfassen (die App rechnet ihre eigene AfA — der Bescheidwert dient dem Abgleich)
+
 WICHTIG - WERBUNGSKOSTEN:
 - Werbungskosten sind Kosten die steuerlich absetzbar sind (z.B. Hausgeld, Verwaltungskosten, Reparaturen, Versicherungen)
 - Erfasse sie im Array "werbungskosten" mit Jahr, Bezeichnung und Betrag
@@ -1780,7 +1894,7 @@ Antworte NUR mit einem validen JSON-Objekt. Keine Erklärungen, kein Markdown.
 
 Format:
 {
-  "dokumentTyp": "kaufvertrag|teilungserklaerung|mietvertrag|darlehen|darlehen_liste|nebenkostenabrechnung|grundbuch|auflistung|sonstiges",
+  "dokumentTyp": "kaufvertrag|teilungserklaerung|mietvertrag|darlehen|darlehen_liste|nebenkostenabrechnung|grundbuch|auflistung|steuerbescheid|energieausweis|sonstiges",
   "dokumentBeschreibung": "Kurze Beschreibung was für ein Dokument es ist",
   "immobilien": [{
     "lfdNr": 1,
@@ -1855,6 +1969,13 @@ Format:
       "bez": "Verwaltungskosten",
       "betrag": 300
     }],
+    "steuerdaten": [{
+      "jahr": 2024,
+      "mieteinnahmen": 12000,
+      "nkVorauszahlung": 2400,
+      "einkuenfteVuV": -1500,
+      "werbungskosten": [{ "bez": "Schuldzinsen", "betrag": 4200 }, { "bez": "Grundsteuer", "betrag": 380 }]
+    }],
     "gefundeneFelder": ["liste", "der", "extrahierten", "felder"]
   }],
   "darlehen_ohne_zuordnung": [{
@@ -1908,6 +2029,7 @@ Eine Teilungserklärung ist ein notarielles Dokument, das ein Gebäude in Wohnun
 const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten = [] }) => {
   const [files, setFiles] = useState([]);
   const [currentFileIndex, setCurrentFileIndex] = useState(0);
+  const [fileStatus, setFileStatus] = useState({}); // pro Datei: 'running' | 'done' | 'error' (Parallel-Analyse)
   const [preview, setPreview] = useState(null);
   const [base64Data, setBase64Data] = useState(null);
   const [parsing, setParsing] = useState(false);
@@ -2159,21 +2281,38 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
     setParsing(true);
     setError(null);
     setProcessingStatus('processing');
-    const accumulated = [];
+    setCurrentFileIndex(0);
+    setFileStatus({});
+    // Parallel-Analyse: max. 3 Dokumente gleichzeitig an die API (statt streng
+    // nacheinander) — bei vielen PDFs deutlich schneller; Reihenfolge der
+    // Ergebnisse bleibt stabil (results nach Original-Index).
+    const results = new Array(files.length).fill(null);
     let lastErr = null;
-    try {
-      for (let i = 0; i < files.length; i++) {
-        setCurrentFileIndex(i);
+    let fertig = 0;
+    let nextIdx = 0;
+    const worker = async () => {
+      while (nextIdx < files.length) {
+        const i = nextIdx++;
+        setFileStatus(prev => ({ ...prev, [i]: 'running' }));
+        let ok = true;
         try {
           const prepared = await prepareFileForUpload(files[i]);
           const mt = prepared.mimeType || files[i].type;
           const res = await analyzeOne(files[i].name, prepared.base64, mt);
-          if (res) accumulated.push(res);
+          if (res) results[i] = res; else ok = false;
         } catch (e) {
+          ok = false;
           lastErr = e;
           console.error('Fehler bei Datei', files[i] && files[i].name, e);
         }
+        setFileStatus(prev => ({ ...prev, [i]: ok ? 'done' : 'error' }));
+        fertig++;
+        setCurrentFileIndex(fertig);
       }
+    };
+    try {
+      await Promise.all(Array.from({ length: Math.min(3, files.length) }, worker));
+      const accumulated = results.filter(Boolean);
       if (accumulated.length === 0) {
         setError(lastErr ? `Fehler beim Analysieren: ${lastErr.message}` : 'Keine Daten in den Dokumenten gefunden.');
         setProcessingStatus(null);
@@ -2192,15 +2331,6 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
     setParsing(false);
   };
 
-  const processNextFile = () => {
-    if (currentFileIndex < files.length - 1) {
-      const nextIndex = currentFileIndex + 1;
-      setCurrentFileIndex(nextIndex);
-      processFile(files[nextIndex]);
-      setProcessingStatus(null);
-    }
-  };
-
   // Mehrere Dokumente zu EINEM Gebäude mit Einheiten zusammenführen
   const mapDarlehenImport = (darlehen) => (Array.isArray(darlehen) ? darlehen.map(d => ({
     name: d.name || '', institut: d.institut || '', kontonummer: d.kontonummer || '',
@@ -2212,7 +2342,7 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
   })) : []);
 
   const cleanImmo = (immo) => {
-    const { gefundeneFelder, zuPruefen, quellenDokument, dokumentTyp, lfdNr, immobilienNr, darlehen, werbungskosten, ...rest } = immo;
+    const { gefundeneFelder, zuPruefen, quellenDokument, dokumentTyp, lfdNr, immobilienNr, darlehen, werbungskosten, steuerdaten, ...rest } = immo;
     return rest;
   };
 
@@ -2231,6 +2361,7 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
     let buildingFields = {};
     let buildingDarlehen = [];
     let buildingZuPruefen = [];
+    const buildingSteuer = {};
     const units = [];
 
     docs.forEach(doc => {
@@ -2245,6 +2376,12 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
             if (!empty && buildingFields[k] === undefined) buildingFields[k] = v;
           });
           buildingDarlehen = buildingDarlehen.concat(mapDarlehenImport(b.darlehen));
+          // Steuerdaten des Gebäude-Dokuments (z.B. Steuerbescheid) einsammeln — jahresweise mergen
+          const bSteuer = buildSteuerJahreImport(b.werbungskosten, b.steuerdaten);
+          Object.entries(bSteuer).forEach(([jahr, y]) => {
+            if (!buildingSteuer[jahr]) buildingSteuer[jahr] = y;
+            else buildingSteuer[jahr] = { ...buildingSteuer[jahr], wk: [...(buildingSteuer[jahr].wk || []), ...(y.wk || [])], miet: buildingSteuer[jahr].miet || y.miet, nkVor: buildingSteuer[jahr].nkVor || y.nkVor };
+          });
           buildingZuPruefen = buildingZuPruefen.concat(b.zuPruefen || b.gefundeneFelder || []);
         });
       }
@@ -2262,6 +2399,7 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
       importiert: true,
       zuPruefen: Array.from(new Set(buildingZuPruefen)),
       darlehen: buildingDarlehen,
+      steuerJahre: buildingSteuer,
       stammdaten: { ...baseStamm, ...buildingFields, eigentumsart: ea },
     };
 
@@ -2273,6 +2411,7 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
       importiert: true,
       zuPruefen: u.zuPruefen || u.gefundeneFelder || [],
       darlehen: mapDarlehenImport(u.darlehen),
+      steuerJahre: buildSteuerJahreImport(u.werbungskosten, u.steuerdaten),
       stammdaten: { ...baseStamm, ...cleanImmo(u), eigentumsart: ea },
     }));
 
@@ -2295,6 +2434,7 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
       importiert: true,
       zuPruefen: u.zuPruefen || u.gefundeneFelder || [],
       darlehen: mapDarlehenImport(u.darlehen),
+      steuerJahre: buildSteuerJahreImport(u.werbungskosten, u.steuerdaten),
       stammdaten: { ...baseStamm, ...cleanImmo(u), eigentumsart: ea },
     }));
     if (skipped > 0) {
@@ -2320,13 +2460,42 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
       importiert: true,
       zuPruefen: immo.zuPruefen || immo.gefundeneFelder || [],
       darlehen: mapDarlehenImport(immo.darlehen),
+      steuerJahre: buildSteuerJahreImport(immo.werbungskosten, immo.steuerdaten),
       stammdaten: { ...baseStamm, ...cleanImmo(immo), eigentumsart: ea },
     };
     onImport([unit]);
   };
 
+  // Baut aus importierten Werbungskosten (je Jahr) und Steuerbescheid-Jahresdaten
+  // die steuerJahre-Struktur der App: { [jahr]: { wk:[], miet, nkVor, nkNach, nkAbr } }
+  const buildSteuerJahreImport = (werbungskosten, steuerdaten) => {
+    const steuerJahre = {};
+    const ensureJahr = (jahr) => {
+      // _confirmed: [] → importierte Jahre gelten im Steuer-Tab als UNBESTÄTIGT,
+      // der User muss die KI-Werte dort aktiv bestätigen (Import-Philosophie "zu prüfen")
+      if (!steuerJahre[jahr]) steuerJahre[jahr] = { wk: [], miet: 0, nkVor: 0, nkNach: 0, nkAbr: 0, _confirmed: [] };
+      return steuerJahre[jahr];
+    };
+    const addWk = (jahr, wk) => {
+      const y = ensureJahr(jahr);
+      const dup = y.wk.find(x => x.bez === (wk.bez || '') && Math.abs((x.betrag || 0) - (wk.betrag || 0)) < 1);
+      if (!dup) y.wk.push({ bez: wk.bez || 'Werbungskosten', betrag: wk.betrag || 0 });
+    };
+    (Array.isArray(werbungskosten) ? werbungskosten : []).forEach(wk => addWk(wk.jahr || new Date().getFullYear(), wk));
+    (Array.isArray(steuerdaten) ? steuerdaten : []).forEach(sd => {
+      if (!sd || !sd.jahr) return;
+      const y = ensureJahr(sd.jahr);
+      if (sd.mieteinnahmen > 0 && !(y.miet > 0)) y.miet = sd.mieteinnahmen;
+      if (sd.nkVorauszahlung > 0 && !(y.nkVor > 0)) y.nkVor = sd.nkVorauszahlung;
+      // Festgestellte Einkünfte laut Bescheid mitführen (Abgleichswert, wird nicht verrechnet)
+      if (typeof sd.einkuenfteVuV === 'number' && y.einkuenfteVuVBescheid === undefined) y.einkuenfteVuVBescheid = sd.einkuenfteVuV;
+      (sd.werbungskosten || []).forEach(wk => addWk(sd.jahr, wk));
+    });
+    return steuerJahre;
+  };
+
   const handleImport = (immoData) => {
-    const { gefundeneFelder, zuPruefen, quellenDokument, dokumentTyp, lfdNr, darlehen, werbungskosten, ...cleanData } = immoData;
+    const { gefundeneFelder, zuPruefen, quellenDokument, dokumentTyp, lfdNr, immobilienNr, darlehen, werbungskosten, steuerdaten, ...cleanData } = immoData;
     
     // Darlehen separat verarbeiten (nicht in stammdaten)
     const darlehenArray = Array.isArray(darlehen) ? darlehen.map(d => ({
@@ -2348,20 +2517,8 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
       restschuld: d.restschuld || 0
     })) : [];
     
-    // Werbungskosten nach Jahr gruppieren für steuerJahre
-    const steuerJahre = {};
-    if (Array.isArray(werbungskosten) && werbungskosten.length > 0) {
-      werbungskosten.forEach(wk => {
-        const jahr = wk.jahr || new Date().getFullYear();
-        if (!steuerJahre[jahr]) {
-          steuerJahre[jahr] = { wk: [], miet: 0, nkVor: 0, nkNach: 0, nkAbr: 0 };
-        }
-        steuerJahre[jahr].wk.push({
-          bez: wk.bez || 'Werbungskosten',
-          betrag: wk.betrag || 0
-        });
-      });
-    }
+    // Werbungskosten + Steuerbescheid-Jahresdaten → steuerJahre (gemeinsamer Helper)
+    const steuerJahre = buildSteuerJahreImport(werbungskosten, steuerdaten);
     
     const newImmo = {
       ...createEmpty(),
@@ -2385,6 +2542,9 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
     }
     
     const { gefundeneFelder, zuPruefen, ...newData } = immoData;
+    // Diese Schlüssel sind KEINE Stammdaten-Felder — sie haben eigene Merge-Logik
+    // (Darlehen/Steuerjahre) bzw. sind Metadaten und dürfen nicht in stammdaten landen
+    const NON_STAMM_KEYS = ['darlehen', 'werbungskosten', 'steuerdaten', 'lfdNr', 'quellenDokument', 'dokumentTyp', 'immobilienNr'];
     const existing = existingImmo.stammdaten;
     
     const decisions = {};
@@ -2394,6 +2554,7 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
     
     // Alle Felder durchgehen
     Object.entries(newData).forEach(([key, newValue]) => {
+      if (NON_STAMM_KEYS.includes(key)) return;
       if (newValue === undefined || newValue === null || newValue === '' || newValue === 0) return;
       
       const existingValue = existing[key];
@@ -2464,14 +2625,45 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
       if (ok) incomingLoans.forEach(neu => { if (!mergedLoans.includes(neu)) mergedLoans.push(neu); });
     }
     
-    // stammdaten.darlehen aufräumen falls dort fälschlich gelandet
-    delete updatedStammdaten.darlehen;
-    
+    // Metadaten/Spezialfelder aufräumen, falls sie in stammdaten gelandet sind (Altbestand)
+    ['darlehen', 'werbungskosten', 'steuerdaten', 'lfdNr', 'quellenDokument', 'dokumentTyp', 'immobilienNr'].forEach(k => delete updatedStammdaten[k]);
+
+    // Steuerdaten (Werbungskosten + Jahresdaten aus Steuerbescheid) in steuerJahre MERGEN.
+    // Regel: vorhandene Werte gewinnen (miet/nkVor nur füllen wenn leer);
+    // Werbungskosten-Positionen werden ergänzt, exakte Duplikate (bez+betrag) übersprungen.
+    const newSteuerJahre = JSON.parse(JSON.stringify(existingImmo.steuerJahre || {}));
+    let steuerMergeCount = 0; // wie viele Jahre wurden ergänzt/angereichert
+    const ensureJahr = (jahr) => {
+      // Neu angelegte Jahre unbestätigt starten (siehe buildSteuerJahreImport)
+      if (!newSteuerJahre[jahr]) { newSteuerJahre[jahr] = { wk: [], miet: 0, nkVor: 0, nkNach: 0, nkAbr: 0, _confirmed: [] }; steuerMergeCount++; }
+      if (!Array.isArray(newSteuerJahre[jahr].wk)) newSteuerJahre[jahr].wk = [];
+      return newSteuerJahre[jahr];
+    };
+    const addWk = (jahr, wk) => {
+      const y = ensureJahr(jahr);
+      const dup = y.wk.find(x => x.bez === (wk.bez || '') && Math.abs((x.betrag || 0) - (wk.betrag || 0)) < 1);
+      if (!dup) y.wk.push({ bez: wk.bez || 'Werbungskosten', betrag: wk.betrag || 0 });
+    };
+    (Array.isArray(newData.werbungskosten) ? newData.werbungskosten : []).forEach(wk => addWk(wk.jahr || new Date().getFullYear(), wk));
+    (Array.isArray(newData.steuerdaten) ? newData.steuerdaten : []).forEach(sd => {
+      if (!sd || !sd.jahr) return;
+      const y = ensureJahr(sd.jahr);
+      if (sd.mieteinnahmen > 0 && !(y.miet > 0)) { y.miet = sd.mieteinnahmen; steuerMergeCount++; }
+      if (sd.nkVorauszahlung > 0 && !(y.nkVor > 0)) { y.nkVor = sd.nkVorauszahlung; steuerMergeCount++; }
+      if (typeof sd.einkuenfteVuV === 'number' && y.einkuenfteVuVBescheid === undefined) y.einkuenfteVuVBescheid = sd.einkuenfteVuV;
+      (sd.werbungskosten || []).forEach(wk => addWk(sd.jahr, wk));
+    });
+
+    // Steuer-Übernahme sichtbar machen: als "zu prüfen" markieren
+    const wkImported = (Array.isArray(newData.werbungskosten) && newData.werbungskosten.length > 0) || (Array.isArray(newData.steuerdaten) && newData.steuerdaten.length > 0);
+    if (wkImported || steuerMergeCount > 0) mergedFields.push('steuerJahre');
+
     const updatedImmo = {
       ...existingImmo,
       importiert: true,
       zuPruefen: mergedFields,
       darlehen: mergedLoans,
+      steuerJahre: newSteuerJahre,
       stammdaten: updatedStammdaten,
     };
     
@@ -2486,6 +2678,8 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
       case 'nebenkostenabrechnung': return <IconWerbung color="#f59e0b" />;
       case 'grundbuch': return <IconObjekt color="#8b5cf6" />;
       case 'auflistung': return <IconList color="#06b6d4" />;
+      case 'steuerbescheid': return <IconSteuer color="#f59e0b" />;
+      case 'energieausweis': return <IconIdea color="#10b981" />;
       case 'teilungserklaerung': return <IconObjekt color="#8b5cf6" />;
       default: return <IconSteuer color="#6366f1" />;
     }
@@ -2501,6 +2695,8 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
       grundbuch: 'Grundbuchauszug',
       auflistung: 'Auflistung / Übersicht',
       teilungserklaerung: 'Teilungserklärung (WEG)',
+      steuerbescheid: 'Steuerbescheid / Feststellung / Anlage V',
+      energieausweis: 'Energieausweis',
       sonstiges: 'Sonstiges Dokument'
     };
     return names[docType] || 'Dokument';
@@ -2717,10 +2913,11 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
               {files.length > 0 && (
                 <div className="files-list">
                   {files.map((f, i) => (
-                    <div key={i} className={`file-item ${i === currentFileIndex ? 'current' : ''} ${i < currentFileIndex || (i === currentFileIndex && processingStatus === 'done') ? 'done' : ''}`}>
+                    <div key={i} className={`file-item ${fileStatus[i] === 'running' ? 'current' : ''} ${fileStatus[i] === 'done' || processingStatus === 'done' ? 'done' : ''}`}>
                       <span className="file-status">
-                        {i < currentFileIndex || (i === currentFileIndex && processingStatus === 'done') ? '✓' : 
-                         i === currentFileIndex && parsing ? '⟳' : 
+                        {fileStatus[i] === 'done' || processingStatus === 'done' ? '✓' :
+                         fileStatus[i] === 'error' ? '✕' :
+                         fileStatus[i] === 'running' ? '⟳' :
                          (i + 1)}
                       </span>
                       <span className="file-name">{f.name}</span>
@@ -2782,7 +2979,7 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
                     onClick={() => {
                       // Alle Immobilien als Array importieren (mit Darlehen!)
                       const allImmos = parsedData.immobilien.map(immo => {
-                        const { gefundeneFelder, zuPruefen, quellenDokument, dokumentTyp, lfdNr, darlehen, ...cleanData } = immo;
+                        const { gefundeneFelder, zuPruefen, quellenDokument, dokumentTyp, lfdNr, immobilienNr, darlehen, werbungskosten, steuerdaten, ...cleanData } = immo;
                         
                         // Darlehen separat verarbeiten
                         const darlehenArray = Array.isArray(darlehen) ? darlehen.map(d => ({
@@ -2810,6 +3007,7 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
                           importiert: true,
                           zuPruefen: zuPruefen || gefundeneFelder || [],
                           darlehen: darlehenArray,
+                          steuerJahre: buildSteuerJahreImport(werbungskosten, steuerdaten),
                           stammdaten: {
                             ...createEmpty().stammdaten,
                             ...cleanData,
@@ -2864,19 +3062,13 @@ const ImportModal = ({ onClose, onImport, existingImmo = null, existingEinheiten
             <>
               <button className="btn-pri" onClick={parseAllDocuments} disabled={files.length === 0 || parsing}>
                 {parsing ? (
-                  <><span className="spinner"></span> Analysiere Dokument {currentFileIndex + 1}/{files.length}...</>
+                  <><span className="spinner"></span> {files.length > 1 ? `Analysiere ${files.length} Dokumente parallel… (${Math.min(currentFileIndex, files.length)}/${files.length} fertig)` : 'Analysiere Dokument…'}</>
                 ) : (
                   <><span className="btn-icon-sm"><IconSearch color="#fff" /></span>
                     {files.length > 1 ? `${files.length} Dokumente analysieren` : 'Dokument analysieren'}
                   </>
                 )}
               </button>
-              {processingStatus === 'done' && currentFileIndex < files.length - 1 && (
-                <button className="btn-sec" onClick={processNextFile}>
-                  <span className="btn-icon-sm"><IconArrowLeft color="#fafafa" style={{ transform: 'rotate(180deg)' }} /></span>
-                  Nächstes Dokument ({currentFileIndex + 2}/{files.length})
-                </button>
-              )}
             </>
           ) : (
             <button className="btn-sec" onClick={() => { setParsedData(null); setFiles([]); setCurrentFileIndex(0); setAllParsedData([]); setPreview(null); setBase64Data(null); setProcessingStatus(null); }}>
@@ -2898,7 +3090,7 @@ const TilgungsplanModal = ({ darlehen, onClose }) => {
     const zinssatz = (darlehen.zinssatz || 0) / 100;
     const tilgung = (darlehen.tilgung || 2) / 100;
     
-    let restschuld = darlehen.restschuld || betrag;
+    let restschuld = currentRestschuld(darlehen) || betrag;
     const monatsrate = darlehen.monatsrate || (betrag * (zinssatz + tilgung) / 12);
     
     const plan = [];
@@ -3710,7 +3902,7 @@ const slComputeMatch = (loan, profile) => {
   }
   if (loan.balance > 0) {
     for (const ed of profile.existingDarlehen) {
-      const eb = ed.restschuld || ed.betrag || 0;
+      const eb = currentRestschuld(ed);
       if (eb > 0 && Math.min(loan.balance, eb) / Math.max(loan.balance, eb) > 0.85) {
         confidence += 0.1; reasons.push(`Restschuld ähnlich (${eb.toLocaleString('de-DE')}€)`); break;
       }
@@ -4133,7 +4325,7 @@ const exportSingleImmobilie = (p, c) => {
   const sa = s.sonderausstattung || [];
   const gwg = (s.grundstueckGroesse || 0) * (s.bodenrichtwert || 0);
   const ga = s.erbbaurecht ? 0 : (s.eigentumsart === 'gesamt' ? gwg : (s.teileigentumsanteil > 0 ? (s.teileigentumsanteil / 10000) * gwg : 0));
-  const restschuld = darlehen.reduce((sum, d) => sum + (d.restschuld || d.betrag || 0), 0);
+  const restschuld = loansRest(darlehen);
   const monatsrate = darlehen.reduce((sum, d) => sum + (d.monatsrate || 0), 0);
 
   const row = (label, val, cls) => val != null && val !== '' && val !== 0 ? `<tr><td>${label}</td><td class="val ${cls||''}">${val}</td></tr>` : '';
@@ -4224,7 +4416,7 @@ const exportSingleImmobilie = (p, c) => {
     for (const d of darlehen) {
       html += `<div class="dl-card"><h3>${esc(d.name) || 'Darlehen'}${d.institut ? ` · ${esc(d.institut)}` : ''}</h3><div class="dl-grid">
         ${d.betrag ? `<div class="dl-item"><div class="lbl">Darlehensbetrag</div><div class="val">${f$(d.betrag)}</div></div>` : ''}
-        ${d.restschuld ? `<div class="dl-item"><div class="lbl">Restschuld</div><div class="val">${f$(d.restschuld)}</div></div>` : ''}
+        ${currentRestschuld(d) ? `<div class="dl-item"><div class="lbl">Restschuld (heute)</div><div class="val">${f$(currentRestschuld(d))}</div></div>` : ''}
         ${d.zinssatz ? `<div class="dl-item"><div class="lbl">Zinssatz</div><div class="val">${d.zinssatz}%</div></div>` : ''}
         ${d.tilgung ? `<div class="dl-item"><div class="lbl">Tilgung</div><div class="val">${d.tilgung}%</div></div>` : ''}
         ${d.monatsrate ? `<div class="dl-item"><div class="lbl">Monatsrate</div><div class="val">${f$(d.monatsrate)}</div></div>` : ''}
@@ -4310,7 +4502,7 @@ const exportPortfolio = (filtered, totals, avgRendite) => {
   for (const i of filtered) {
     const s = i.stammdaten;
     const dl = i.darlehen || [];
-    const rs = dl.reduce((sum, d) => sum + (d.restschuld || d.betrag || 0), 0);
+    const rs = loansRest(dl);
     html += `<div class="dl-card"><h3>${esc(s.name) || '—'}${s.adresse ? ` · ${esc(s.adresse)}` : ''}</h3><div class="dl-grid">
       <div class="dl-item"><div class="lbl">Kaufpreis</div><div class="val">${f(i.kp)}</div></div>
       <div class="dl-item"><div class="lbl">Jahresmiete</div><div class="val pos">${f(i.jm)}</div></div>
@@ -4336,7 +4528,42 @@ const exportPortfolio = (filtered, totals, avgRendite) => {
 // (zinssatz||0)+(tilgung||0): auch 0%-Zins-Darlehen (KfW) mit Tilgung zählen.
 const loanRate = (d) => (d.monatsrate > 0) ? d.monatsrate : ((d.betrag > 0 && ((d.zinssatz||0)+(d.tilgung||0)) > 0) ? d.betrag*(((d.zinssatz||0)+(d.tilgung||0))/100)/12 : 0);
 const loansRate = (list) => (list||[]).reduce((a,d)=>a+loanRate(d),0);
-const loansRest = (list) => (list||[]).reduce((a,d)=>a+(d.restschuld||d.betrag||0),0);
+
+// Fortgeschriebene Restschuld per heute (annuitätische Näherung, monatsweise):
+// - restschuld + restschuldDatum erfasst → ab Stichtag monatlich fortschreiben
+//   (Zins = Rest × Zinssatz/12, Tilgung = Monatsrate − Zins)
+// - nur restschuld ohne Datum → Wert unverändert anzeigen (Alt-Verhalten)
+// - keine restschuld, aber betrag + ersteRate/abschluss → ab dort vom Ursprungsbetrag fortschreiben
+// Hinweis: bankgenau ist das nie (Zinsmethode/Valuta) — Abgleich 1×/Jahr per neuem Stichtag.
+const currentRestschuld = (d, asOf = new Date()) => {
+  if (!d) return 0;
+  // Endfällige/Bauspar-/Forward-Darlehen tilgen nicht laufend annuitätisch —
+  // deren Restschuld bleibt konstant (Bauspar: Rate ist Sparbeitrag, nicht Tilgung)
+  if (['endfaellig', 'bauspar', 'forward'].includes(d.typ)) return d.restschuld || d.betrag || 0;
+  let start = 0, startDateStr = '';
+  if ((d.restschuld || 0) > 0) {
+    if (!d.restschuldDatum) return d.restschuld; // statisch (Alt-Verhalten)
+    start = d.restschuld; startDateStr = d.restschuldDatum;
+  } else if ((d.betrag || 0) > 0 && (d.ersteRate || d.abschluss)) {
+    start = d.betrag; startDateStr = d.ersteRate || d.abschluss;
+  } else {
+    return d.restschuld || d.betrag || 0;
+  }
+  const startDate = new Date(startDateStr);
+  if (isNaN(startDate.getTime()) || startDate >= asOf) return start;
+  const rate = loanRate(d);
+  if (rate <= 0) return start; // ohne Rate keine Fortschreibung möglich
+  const zinsM = (d.zinssatz || 0) / 100 / 12;
+  let months = (asOf.getFullYear() - startDate.getFullYear()) * 12 + (asOf.getMonth() - startDate.getMonth());
+  if (asOf.getDate() < startDate.getDate()) months -= 1; // Monatstag noch nicht erreicht → Rate noch nicht fällig
+  if (months <= 0) return start;
+  let rest = start;
+  for (let m = 0; m < months && rest > 0; m++) {
+    rest = Math.max(0, rest - Math.max(0, rate - rest * zinsM));
+  }
+  return Math.round(rest);
+};
+const loansRest = (list, asOf = new Date()) => (list||[]).reduce((a,d)=>a+currentRestschuld(d, asOf),0);
 
 // parentGwg: Grundstückswert des übergeordneten Gebäudes. Einheiten haben i.d.R. kein
 // eigenes Grundstück erfasst — ohne den geerbten Wert bliebe der Bodenwertabzug bei der
@@ -5415,7 +5642,7 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
                     <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
                       {einheiten.map(u => {
                         const ul = u.darlehen || [];
-                        const uRest = ul.reduce((a, d) => a + (d.restschuld || d.betrag || 0), 0);
+                        const uRest = loansRest(ul);
                         const open = finUnitOpen === u.id;
                         return (
                           <div key={u.id} style={{border:'1px solid var(--border)',borderRadius:'8px',overflow:'hidden'}}>
@@ -5428,7 +5655,7 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
                                 {ul.length === 0 ? (
                                   <div style={{color:'var(--text-muted)'}}>Kein Darlehen erfasst.</div>
                                 ) : ul.map((d, di) => (
-                                  <div key={di} style={{display:'flex',justifyContent:'space-between',padding:'2px 0'}}><span style={{color:'var(--text-muted)'}}>{d.name || d.institut || 'Darlehen'}</span><span>{fmt(d.restschuld || d.betrag || 0)} · {fmt(d.monatsrate || 0)}/Mon.</span></div>
+                                  <div key={di} style={{display:'flex',justifyContent:'space-between',padding:'2px 0'}}><span style={{color:'var(--text-muted)'}}>{d.name || d.institut || 'Darlehen'}</span><span>{fmt(currentRestschuld(d))} · {fmt(loanRate(d))}/Mon.</span></div>
                                 ))}
                                 <div style={{marginTop:'6px'}}><button onClick={() => onSelectEinheit && onSelectEinheit(u)} style={{padding:'4px 9px',background:'transparent',color:'#3b82f6',border:'1px solid #3b82f6',borderRadius:'6px',fontSize:'11px',cursor:'pointer'}}>Darlehen dieser Einheit bearbeiten →</button></div>
                               </div>
@@ -5661,14 +5888,37 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
                     }} />
                   </div>
                   <div className="darlehen-field">
-                    <label>Restschuld (akt.)</label>
+                    <label>Restschuld (Stand)</label>
                     <div className="ifld"><NumInput value={d.restschuld || ''} onChange={v => {
                       const newD = [...(p.darlehen || [])];
                       newD[i] = { ...newD[i], restschuld: v };
                       upd({ ...p, darlehen: newD });
                     }} /><span>€</span></div>
                   </div>
+                  <div className="darlehen-field">
+                    <label>Restschuld per (Stichtag)</label>
+                    <DateInput value={d.restschuldDatum || ''} onChange={v => {
+                      const newD = [...(p.darlehen || [])];
+                      newD[i] = { ...newD[i], restschuldDatum: v };
+                      upd({ ...p, darlehen: newD });
+                    }} />
+                  </div>
                 </div>
+                {(() => {
+                  // Live-Anzeige der fortgeschriebenen Restschuld, sobald ein Stichtag
+                  // (oder Ursprungsbetrag + Datum) eine Fortschreibung erlaubt
+                  const heute = currentRestschuld(d);
+                  const statisch = d.restschuld || d.betrag || 0;
+                  const dynamisch = (d.restschuld > 0 && d.restschuldDatum) || (!(d.restschuld > 0) && d.betrag > 0 && (d.ersteRate || d.abschluss));
+                  if (!dynamisch || statisch <= 0) return null;
+                  const basisDatum = d.restschuld > 0 ? d.restschuldDatum : (d.ersteRate || d.abschluss);
+                  return (
+                    <div style={{marginTop:'8px',padding:'8px 10px',borderRadius:'6px',background:'rgba(16,185,129,0.08)',border:'1px solid rgba(16,185,129,0.35)',fontSize:'12px',display:'flex',justifyContent:'space-between',alignItems:'center',gap:'8px',flexWrap:'wrap'}}>
+                      <span><b>Restschuld heute: {fmt(heute)}</b></span>
+                      <span style={{color:'var(--text-muted)',fontSize:'11px'}}>automatisch fortgeschrieben aus {fmt(statisch)} per {formatDateDE ? formatDateDE(basisDatum) : basisDatum} · Näherung, 1×/Jahr mit Kontoauszug abgleichen</span>
+                    </div>
+                  );
+                })()}
               </div>
               
               {/* Berechnungen */}
@@ -5698,7 +5948,7 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
             <button className="btn-add" onClick={() => upd({ ...p, darlehen: [...(p.darlehen || []), { 
               name: '', institut: '', kontonummer: '', typ: 'annuitaeten',
               betrag: 0, zinssatz: 0, effektivzins: 0, tilgung: 2, monatsrate: 0, sondertilgung: 5,
-              abschluss: '', ersteRate: '', laufzeit: 0, zinsbindungJahre: 10, zinsbindungEnde: '', restschuld: 0
+              abschluss: '', ersteRate: '', laufzeit: 0, zinsbindungJahre: 10, zinsbindungEnde: '', restschuld: 0, restschuldDatum: ''
             }] })}>+ Darlehen hinzufügen</button>
           </div>
           {(p.darlehen || []).length > 0 && (() => {
@@ -7714,6 +7964,7 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, userMenu, c
   const [curr, setCurr] = useState(null);
   const [tab, setTab] = useState('dash');
   const [modal, setModal] = useState(false);
+  const [assignWizard, setAssignWizard] = useState(false);
   const [importModal, setImportModal] = useState(false);
   const [beteiligteModal, setBeteiligteModal] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(() => {
@@ -7869,6 +8120,47 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, userMenu, c
     setValidationErrors({});
   };
   
+  // Geführte Gebäude-Zuordnung (AssignWizard): Container ggf. anlegen, parentId setzen
+  const applyAssignment = ({ mode, targetId, neu, unitIds }) => {
+    if (!unitIds || unitIds.length === 0) { setAssignWizard(false); return; }
+    // Pendenten Auto-Save stoppen (würde sonst die frische parentId überschreiben)
+    if (autoSaveTimerRef.current) { clearTimeout(autoSaveTimerRef.current); autoSaveTimerRef.current = null; }
+    let containerId = targetId;
+    let updated = [...saved];
+    if (mode === 'new') {
+      const base = createEmpty();
+      containerId = base.id;
+      const firstUnit = saved.find(x => unitIds.includes(x.id));
+      const container = {
+        ...base,
+        saved: true,
+        isContainer: true,
+        stammdaten: {
+          ...base.stammdaten,
+          name: (neu.name || 'Neues Gebäude').trim(),
+          adresse: neu.adresse || '',
+          eigentumsart: neu.eigentumsart || 'gesamt',
+          typ: 'mfh',
+          bundesland: firstUnit?.stammdaten?.bundesland || base.stammdaten.bundesland,
+          eigentuemer: firstUnit?.stammdaten?.eigentuemer || '',
+        },
+      };
+      updated = [...updated, container];
+    }
+    updated = updated.map(x => unitIds.includes(x.id) ? { ...x, parentId: containerId, isContainer: false } : x);
+    setSaved(updated);
+    setAssignWizard(false);
+    setModal(false);
+    // History leeren wie bei jedem curr-Wechsel — sonst könnte ein Undo die frische
+    // Zuordnung eines gerade bearbeiteten Objekts still zurückdrehen
+    setHistory([]);
+    setRedoHistory([]);
+    setValidationErrors({});
+    showToast('success', `${unitIds.length} Objekt(e) dem Gebäude zugeordnet`);
+    const cont = updated.find(x => x.id === containerId);
+    if (cont) { setCurr({ ...cont }); setTab('stamm'); }
+  };
+
   const onAddEinheit = (parentId) => {
     const parent = saved.find(x => x.id === parentId);
     const ea = parent?.stammdaten?.eigentumsart || 'weg';
@@ -9421,7 +9713,7 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, userMenu, c
         )}
       </main>
 
-      {modal && <Modal items={saved} onSelect={onSelect} onNew={onNew} onClose={() => setModal(false)} onDel={onDel} onOpenImport={() => { setModal(false); setImportModal(true); }} onRestore={(immos) => {
+      {modal && <Modal items={saved} onSelect={onSelect} onNew={onNew} onClose={() => setModal(false)} onDel={onDel} onOpenImport={() => { setModal(false); setImportModal(true); }} onOpenAssign={() => { setModal(false); setAssignWizard(true); }} onRestore={(immos) => {
         // Backup-Restore über den regulären State-/Cloud-Pfad (der alte Weg über
         // localStorage['immoData'] wurde von niemandem gelesen und war wirkungslos).
         // MERGE statt Ersetzen: gleiche IDs werden überschrieben, neue ergänzt, nicht
@@ -9450,6 +9742,7 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, userMenu, c
         setTab('stamm');
         setModal(false);
       }} />}
+      {assignWizard && <AssignWizard immobilien={saved} onApply={applyAssignment} onClose={() => setAssignWizard(false)} />}
       {importModal && <ImportModal onClose={() => setImportModal(false)} onImport={onImport} existingImmo={curr?.saved ? curr : null} existingEinheiten={curr?.saved ? saved.filter(x => x.parentId === curr.id) : []} />}
       {beteiligteModal && (
         <BeteiligteModal 
