@@ -8,6 +8,7 @@ export const config = {
       sizeLimit: '10mb',
     },
   },
+  maxDuration: 60, // Sekunden — PDF-Analysen brauchen oft mehr als die 10s-Vorgabe
 };
 
 export default async function handler(req, res) {
@@ -138,9 +139,19 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: data.error.message || 'API Fehler' });
     }
 
-    // Extrahiere den Text aus der Antwort
-    const text = data.content?.[0]?.text || '';
-    
+    // Text robust aus ALLEN Textblöcken lesen — neuere Modelle können weitere
+    // Blocktypen voranstellen; der alte Zugriff auf content[0] lieferte dann ''
+    const text = Array.isArray(data.content)
+      ? data.content.filter(b => b && b.type === 'text').map(b => b.text || '').join('')
+      : '';
+
+    if (!text) {
+      // Diagnose statt stiller Leere: sagt beim nächsten Fehler genau, woran es lag
+      const blocks = Array.isArray(data.content) ? data.content.map(b => b && b.type).join(', ') : 'keine';
+      console.error('Leere KI-Antwort:', JSON.stringify({ model, stop_reason: data.stop_reason, blocks }));
+      return res.status(502).json({ error: `KI lieferte keinen Text (Modell: ${model}, stop_reason: ${data.stop_reason || 'unbekannt'}, Blöcke: ${blocks})` });
+    }
+
     return res.status(200).json({ text });
 
   } catch (error) {
