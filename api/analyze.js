@@ -110,16 +110,19 @@ export default async function handler(req, res) {
       });
     }
 
+    // Modell per Vercel-Umgebungsvariable ANALYZE_MODEL übersteuerbar — wird ein
+    // Modell von Anthropic abgeschaltet (wie claude-sonnet-4-20250514 im Juni 2026),
+    // genügt künftig eine Env-Var-Änderung statt eines Code-Deploys.
+    const model = process.env.ANALYZE_MODEL || 'claude-sonnet-5';
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'anthropic-beta': 'pdfs-2024-09-25'
+        'anthropic-version': '2023-06-01'
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model,
         max_tokens: 8192,
         messages: [{
           role: 'user',
