@@ -983,6 +983,7 @@ const createEmpty = () => ({
   beteiligungen: [], // Array von { beteiligterID, anteil }
   darlehen: [], // Array von { name, institut, betrag, restschuld, restschuldDatum (Stichtag der Restschuld → currentRestschuld() schreibt annuitätisch bis heute fort), zinssatz, effektivzins, tilgung, monatsrate, sondertilgung, abschluss, ersteRate, laufzeit, zinsbindungJahre, zinsbindungEnde, kontonummer }
   miethistorie: [], // Array von { mieter, von, bis, kaltmiete, nebenkosten, stellplatz, sonstiges, grund }
+  bewertungen: [], // Array von { datum, wert, quelle: 'gutachten'|'kaufpreis'|'schaetzung'|'online'|'sachwert'|'ertragswert', notiz }
   erinnerungen: [], // Array von { datum, titel, beschreibung, erledigt }
   // === Hierarchie (Hybrid-Modell, eingeführt v7.7) ===
   isContainer: false, // true = Gebäude (z.B. MFH) mit Einheiten darunter
@@ -999,6 +1000,10 @@ const createEmpty = () => ({
     etage: '',
     verkehrswert: 0,
     verkehrswertDatum: '',
+    // Marktwert-Indikation (Sachwert/Ertragswert): einstellbare Parameter
+    baukostenProQm: 0,       // Herstellungskosten €/qm (0 = Indikation aus)
+    sachwertFaktor: 1,       // Marktanpassungsfaktor Sachwert
+    marktKaufpreisfaktor: 0, // ortsüblicher Vervielfältiger (0 = Indikation aus)
     besitzstatus: 'eigentum', // 'eigentum' | 'interesse' (potenzieller Kauf)
     kaufpreisImmobilie: 0, kaufpreisStellplatz: 0,
     grundstueckGroesse: 0, bodenrichtwert: 0, teileigentumsanteil: 0,
@@ -1007,6 +1012,7 @@ const createEmpty = () => ({
     kaltmiete: 0, // Kaltmiete pro Monat
     nebenkostenVorauszahlung: 0, // NK-Vorauszahlung pro Monat
     mieterName: '', // Name des aktuellen Mieters
+    mietvertragsart: 'standard', // 'standard' | 'staffel' | 'index'
     mietstatusAktiv: true, // true = vermietet, false = Leerstand
     mietbeginn: '',
     mietende: '', // Mietende (leer = unbefristet)
@@ -4623,7 +4629,10 @@ const cmAgg = (container, children) => {
   return {kp,nk,ak,jm,mm:jm/12,rendite:kp>0?jm/kp:0,kaufpreisfaktor:jm>0?kp/jm:0,afaGeb,afaSA,afaGes,wohnflaeche,verkehrswert,fk,rate,saSumme,saCount,ga:0};
 };
 
-const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, validationErrors = {}, beteiligte = [], immobilien = [], onSmartImport, onAddEinheit, onSelectEinheit, onAssignEinheit, onDetachEinheit, onDeleteUnit, onUpdateUnit, onSplitToUnit, onConvertToContainer }) => {
+const MIETGRUND_LABELS = { staffel: 'Staffelmiete', index: 'Indexmiete', mietspiegel: 'Mietspiegel-Anpassung', modernisierung: 'Modernisierung', neuvermietung: 'Neuvermietung', sonstige: 'Sonstige Anpassung' };
+const BEWERTUNG_QUELLEN = { gutachten: 'Bank-Gutachten', kaufpreis: 'Kaufpreis', schaetzung: 'Eigene Schätzung', online: 'Online-Bewertung', sachwert: 'Sachwert-Indikation', ertragswert: 'Ertragswert-Indikation' };
+
+const Stamm = ({ p, upd, c, histSignal = 0, onSave, saved, onOpenImport, onDelete, onDiscard, validationErrors = {}, beteiligte = [], immobilien = [], onSmartImport, onAddEinheit, onSelectEinheit, onAssignEinheit, onDetachEinheit, onDeleteUnit, onUpdateUnit, onSplitToUnit, onConvertToContainer }) => {
   const [sec, setSec] = useState(null);
   const [secExpanded, setSecExpanded] = useState(false);
   const [darlehenImportModal, setDarlehenImportModal] = useState(false);
@@ -4633,6 +4642,16 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
   const [mhistImportModal, setMhistImportModal] = useState(false);
   const [archiveConfirm, setArchiveConfirm] = useState(false);
   const [showAssign, setShowAssign] = useState(false);
+  // Mietänderungs-Erkennung: Kaltmiete beim Öffnen des Objekts merken — weicht der
+  // aktuelle Wert davon ab, bietet die App an, den alten Stand in die Historie zu sichern
+  const baseKaltmieteRef = useRef({ id: null, wert: 0 });
+  const [mietAendGrund, setMietAendGrund] = useState('mietspiegel');
+  const [, forceMietRender] = useState(0);
+  // Nach Undo/Redo Referenz neu setzen — sonst zeigt das Banner eine "Änderung",
+  // die nur das Undo war, und würde einen falschen Historie-Eintrag anbieten
+  useEffect(() => {
+    baseKaltmieteRef.current = { id: p?.id ?? null, wert: (p?.stammdaten?.kaltmiete) || 0 };
+  }, [histSignal]);
   const [detachConfirmId, setDetachConfirmId] = useState(null);
   const [kpUnitOpen, setKpUnitOpen] = useState(null);
   const [mieteUnitOpen, setMieteUnitOpen] = useState(null);
@@ -5012,6 +5031,105 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
               <div className="field-group-label">Aktueller Verkehrswert</div>
               <Input label="Verkehrswert" value={s.verkehrswert} onChange={v => set('verkehrswert', v)} suffix="€" error={validationErrors.verkehrswert} />
               <Input label="Bewertungsdatum" value={s.verkehrswertDatum} onChange={v => set('verkehrswertDatum', v)} type="date" />
+
+              {!p.isContainer && (<>
+              <hr />
+              <div className="field-group-label">Bewertungs-Historie</div>
+              <p className="hint">Gutachten, Kaufpreise und Schätzungen mit Datum erfassen — daraus entsteht die Wertentwicklung des Objekts.</p>
+              {(p.bewertungen || []).length > 0 && (
+                <div style={{display:'flex',flexDirection:'column',gap:'6px',marginBottom:'8px'}}>
+                  {/* Sortiert (neueste oben), Bearbeitung per Objekt-Referenz — Indizes der
+                      sortierten Kopie dürfen NICHT zum Ändern des Original-Arrays benutzt werden */}
+                  {[...(p.bewertungen || [])].sort((a, b) => (b.datum || '').localeCompare(a.datum || '')).map((bw, si) => {
+                    const updBw = (partial) => upd({ ...p, bewertungen: (p.bewertungen || []).map(x => x === bw ? { ...x, ...partial } : x) });
+                    return (
+                      <div key={bw.id ?? si} style={{display:'flex',alignItems:'center',gap:'6px',padding:'7px 10px',border:'1px solid var(--border)',borderRadius:'7px',fontSize:'12px',flexWrap:'wrap'}}>
+                        <div style={{width:'120px'}}><DateInput value={bw.datum || ''} onChange={v => updBw({ datum: v })} /></div>
+                        <div style={{width:'110px',display:'flex',alignItems:'center',gap:'3px'}}><NumInput value={bw.wert || ''} onChange={v => updBw({ wert: v })} placeholder="Wert" /><span style={{color:'var(--text-muted)'}}>€</span></div>
+                        <select value={bw.quelle || 'gutachten'} onChange={e => updBw({ quelle: e.target.value })} style={{padding:'5px 8px',borderRadius:'6px',border:'1px solid var(--border)',background:'var(--bg-input)',color:'var(--text)',fontSize:'12px'}}>
+                          {Object.entries(BEWERTUNG_QUELLEN).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                        </select>
+                        <input type="text" value={bw.notiz || ''} onChange={e => updBw({ notiz: e.target.value })} placeholder="Notiz" style={{flex:1,minWidth:'100px',padding:'5px 8px',borderRadius:'6px',border:'1px solid var(--border)',background:'var(--bg-input)',color:'var(--text)',fontSize:'12px'}} />
+                        <button title="Als aktuellen Verkehrswert übernehmen" style={{padding:'4px 8px',background:'transparent',color:'#10b981',border:'1px solid #10b981',borderRadius:'5px',fontSize:'11px',cursor:'pointer',whiteSpace:'nowrap'}} onClick={() => {
+                          upd({ ...p, stammdaten: { ...s, verkehrswert: bw.wert || 0, verkehrswertDatum: bw.datum || new Date().toISOString().split('T')[0] } });
+                        }}>→ VW</button>
+                        <button className="btn-del-small" onClick={() => upd({ ...p, bewertungen: (p.bewertungen || []).filter(x => x !== bw) })}>×</button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              <button className="btn-add" onClick={() => upd({ ...p, bewertungen: [...(p.bewertungen || []), { id: Date.now() + '_' + Math.random().toString(36).substr(2, 6), datum: new Date().toISOString().split('T')[0], wert: s.verkehrswert || 0, quelle: 'gutachten', notiz: '' }] })}>+ Bewertung erfassen</button>
+              {(p.bewertungen || []).length > 0 && (() => {
+                const letzte = [...(p.bewertungen || [])].sort((a, b) => (b.datum || '').localeCompare(a.datum || ''))[0];
+                if (!letzte || letzte.wert === s.verkehrswert) return null;
+                return <p className="hint">Hinweis: Der aktuelle Verkehrswert ({fmt(s.verkehrswert || 0)}) weicht von der jüngsten Bewertung ({fmt(letzte.wert || 0)}) ab.</p>;
+              })()}
+              {(p.bewertungen || []).length > 0 && (
+                <div style={{display:'flex',flexDirection:'column',gap:'4px',marginTop:'6px'}}>
+                  {[...(p.bewertungen || [])].sort((a, b) => (a.datum || '').localeCompare(b.datum || '')).map((bw, i, arr) => {
+                    if (i === 0) return null;
+                    const prev = arr[i - 1];
+                    if (!(prev.wert > 0) || !(bw.wert > 0)) return null;
+                    const delta = ((bw.wert - prev.wert) / prev.wert) * 100;
+                    return <div key={'d' + i} style={{fontSize:'11px',color: delta >= 0 ? '#10b981' : '#ef4444'}}>{formatDateDE(prev.datum)} → {formatDateDE(bw.datum)}: {delta >= 0 ? '+' : ''}{delta.toLocaleString('de-DE', { maximumFractionDigits: 1 })} %</div>;
+                  })}
+                </div>
+              )}
+
+              <hr />
+              <div className="field-group-label">Marktwert-Indikation</div>
+              <p className="hint">Zwei Näherungsverfahren als Plausibilitäts-Check — kein Ersatz für ein Gutachten. Weichen sie stark vom letzten Gutachten ab, lohnt eine Neubewertung.</p>
+              {/* Sachwert: Bodenwert + (Wohnfläche × Baukosten × Alterswertminderung) × Marktfaktor */}
+              <Input label="Herstellungskosten" value={s.baukostenProQm} onChange={v => set('baukostenProQm', v)} suffix="€/qm" ph="z.B. 3000" />
+              <Input label="Marktanpassungsfaktor" value={s.sachwertFaktor} onChange={v => set('sachwertFaktor', v)} suffix="×" ph="1,0" />
+              {(() => {
+                if (!((s.baukostenProQm || 0) > 0 && (s.wohnflaeche || 0) > 0)) return <p className="hint" style={{marginTop:'-2px'}}>Für die Sachwert-Indikation Herstellungskosten (€/qm) erfassen; Bodenwert kommt aus Grundstück × Bodenrichtwert{s.teileigentumsanteil > 0 ? ' (TEA-anteilig)' : ''}, Alterswertminderung aus dem Baujahr.</p>;
+                const jetzt = new Date().getFullYear();
+                const alter = (s.baujahr || 0) > 1800 ? Math.max(0, jetzt - s.baujahr) : 0;
+                const GND = 80; // Gesamtnutzungsdauer Wohngebäude
+                const minderung = Math.max(0, GND - alter) / GND;
+                const gebaeudewert = (s.wohnflaeche || 0) * (s.baukostenProQm || 0) * minderung;
+                // Bodenwert: bei 'gesamt'-Einheiten das (vom Gebäude geerbte) Grundstück
+                // wohnflächenanteilig ansetzen — sonst zählt jede Einheit den vollen
+                // Bodenwert und das Gebäude-Aggregat vervielfacht das Grundstück
+                let bodenwert = c.ga;
+                if (p.parentId && s.eigentumsart === 'gesamt') {
+                  const geschwister = (immobilien || []).filter(x => x.parentId === p.parentId && !x.isContainer);
+                  const sumFl = geschwister.reduce((a, u) => a + (((u.stammdaten || {}).wohnflaeche) || 0), 0);
+                  bodenwert = c.ga * (sumFl > 0 ? ((s.wohnflaeche || 0) / sumFl) : (geschwister.length > 0 ? 1 / geschwister.length : 1));
+                }
+                const sachwert = (bodenwert + gebaeudewert) * (Number(s.sachwertFaktor) || 1);
+                return (
+                  <div style={{padding:'10px 12px',border:'1px solid var(--border)',borderRadius:'8px',fontSize:'12px',display:'flex',flexDirection:'column',gap:'4px',marginBottom:'8px'}}>
+                    <div style={{display:'flex',justifyContent:'space-between'}}><span>Bodenwert{s.teileigentumsanteil > 0 ? ' (TEA-anteilig)' : (p.parentId && s.eigentumsart === 'gesamt' ? ' (flächenanteilig)' : '')}{s.erbbaurecht ? ' (Erbbaurecht → 0)' : ''}</span><span>{fmt(bodenwert)}</span></div>
+                    <div style={{display:'flex',justifyContent:'space-between'}}><span>Gebäudewert ({s.wohnflaeche} qm × {fmt(s.baukostenProQm)}{alter > 0 ? ` × ${(minderung * 100).toLocaleString('de-DE', { maximumFractionDigits: 1 })} % Restwert bei ${alter} J.` : ''})</span><span>{fmt(gebaeudewert)}</span></div>
+                    <div style={{display:'flex',justifyContent:'space-between',fontWeight:700,borderTop:'1px solid var(--border)',paddingTop:'4px'}}><span>Sachwert-Indikation{(Number(s.sachwertFaktor) || 1) !== 1 ? ` (× ${s.sachwertFaktor})` : ''}</span><span>{fmt(sachwert)}</span></div>
+                    <button style={{alignSelf:'flex-end',marginTop:'4px',padding:'5px 10px',background:'transparent',color:'#10b981',border:'1px solid #10b981',borderRadius:'6px',fontSize:'11px',cursor:'pointer'}} onClick={() => {
+                      const heute = new Date().toISOString().split('T')[0];
+                      upd({ ...p, bewertungen: [...(p.bewertungen || []), { id: Date.now() + '_sw', datum: heute, wert: Math.round(sachwert), quelle: 'sachwert', notiz: `${fmt(s.baukostenProQm)}/qm, Faktor ${s.sachwertFaktor || 1}` }], stammdaten: { ...s, verkehrswert: Math.round(sachwert), verkehrswertDatum: heute } });
+                    }}>Als Verkehrswert übernehmen</button>
+                  </div>
+                );
+              })()}
+              {/* Ertragswert: Jahres-Kaltmiete × ortsüblicher Vervielfältiger */}
+              <Input label="Ortsüblicher Kaufpreisfaktor" value={s.marktKaufpreisfaktor} onChange={v => set('marktKaufpreisfaktor', v)} suffix="× JKM" ph="z.B. 22" />
+              {(() => {
+                if (!((s.marktKaufpreisfaktor || 0) > 0 && c.jm > 0)) return null;
+                const ertragswert = c.jm * (Number(s.marktKaufpreisfaktor) || 0);
+                return (
+                  <div style={{padding:'10px 12px',border:'1px solid var(--border)',borderRadius:'8px',fontSize:'12px',display:'flex',flexDirection:'column',gap:'4px'}}>
+                    <div style={{display:'flex',justifyContent:'space-between'}}><span>Jahres-Kaltmiete × {s.marktKaufpreisfaktor}</span><span>{fmt(c.jm)} × {s.marktKaufpreisfaktor}</span></div>
+                    <div style={{display:'flex',justifyContent:'space-between',fontWeight:700,borderTop:'1px solid var(--border)',paddingTop:'4px'}}><span>Ertragswert-Indikation</span><span>{fmt(ertragswert)}</span></div>
+                    {s.verkehrswert > 0 && <div style={{fontSize:'11px',color:'var(--text-muted)'}}>Aktueller Verkehrswert entspricht dem {(s.verkehrswert / c.jm).toLocaleString('de-DE', { maximumFractionDigits: 1 })}-fachen der Jahresmiete.</div>}
+                    <button style={{alignSelf:'flex-end',marginTop:'4px',padding:'5px 10px',background:'transparent',color:'#10b981',border:'1px solid #10b981',borderRadius:'6px',fontSize:'11px',cursor:'pointer'}} onClick={() => {
+                      const heute = new Date().toISOString().split('T')[0];
+                      upd({ ...p, bewertungen: [...(p.bewertungen || []), { id: Date.now() + '_ew', datum: heute, wert: Math.round(ertragswert), quelle: 'ertragswert', notiz: `Faktor ${s.marktKaufpreisfaktor}` }], stammdaten: { ...s, verkehrswert: Math.round(ertragswert), verkehrswertDatum: heute } });
+                    }}>Als Verkehrswert übernehmen</button>
+                  </div>
+                );
+              })()}
+              </>)}
             </>
           )}
           {p.isContainer && einheiten.length > 0 && (
@@ -5345,6 +5463,30 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
           
           <hr />
           <div className="field-group-label">Mietkonditionen</div>
+          {/* Fällige geplante Mieterhöhungen: Ein-Klick-Übernahme (setzt Kaltmiete, sichert
+              alten Stand in der Historie, hakt die Staffel als angewendet ab) */}
+          {(() => {
+            if (baseKaltmieteRef.current.id !== p.id) baseKaltmieteRef.current = { id: p.id, wert: s.kaltmiete || 0 };
+            const faellig = (p.mieterhöhungen || []).filter(m => m.datum && !m.angewendet && (m.neueKaltmiete || 0) > 0 && (m.neueKaltmiete || 0) !== (s.kaltmiete || 0) && new Date(m.datum) <= new Date());
+            if (faellig.length === 0) return null;
+            return faellig.map((m, idx) => (
+              <div key={idx} style={{padding:'10px 12px',marginBottom:'10px',border:'1px solid #f59e0b',borderRadius:'8px',background:'rgba(245,158,11,0.08)',fontSize:'12px',display:'flex',alignItems:'center',gap:'10px',flexWrap:'wrap'}}>
+                <span style={{flex:1,minWidth:'220px'}}>⏰ <b>{MIETGRUND_LABELS[m.grund] || 'Mieterhöhung'} fällig</b> seit {formatDateDE(m.datum)}: {fmt(s.kaltmiete || 0)} → <b>{fmt(m.neueKaltmiete)}</b>/Mon.</span>
+                <button style={{padding:'6px 12px',background:'#f59e0b',color:'#fff',border:'none',borderRadius:'6px',fontSize:'12px',cursor:'pointer',fontWeight:600}} onClick={() => {
+                  // von = Ende des letzten Historie-Eintrags (verhindert überlappende Zeiträume
+                  // bei mehreren nacheinander angewendeten Staffeln), Fallback Mietbeginn
+                  const lastBis = (p.miethistorie || []).reduce((acc, h) => (h.bis && (!acc || h.bis > acc)) ? h.bis : acc, '');
+                  const eintrag = { von: lastBis || s.mietbeginn || '', bis: m.datum, kaltmiete: s.kaltmiete || 0, nebenkosten: s.nebenkostenVorauszahlung || 0, stellplatz: s.mieteStellplatz || 0, sonstiges: s.mieteSonderausstattung || 0, grund: `${MIETGRUND_LABELS[m.grund] || 'Mieterhöhung'}${s.mieterName ? ' – Mieter: ' + s.mieterName : ''}` };
+                  const neueErh = (p.mieterhöhungen || []).map(x => x === m ? { ...x, angewendet: true } : x);
+                  baseKaltmieteRef.current = { id: p.id, wert: m.neueKaltmiete };
+                  upd({ ...p, miethistorie: [...(p.miethistorie || []), eintrag], mieterhöhungen: neueErh, stammdaten: { ...s, kaltmiete: m.neueKaltmiete } });
+                }}>Jetzt übernehmen</button>
+                <button style={{padding:'6px 10px',background:'transparent',color:'var(--text-muted)',border:'1px solid var(--border)',borderRadius:'6px',fontSize:'12px',cursor:'pointer'}} onClick={() => {
+                  upd({ ...p, mieterhöhungen: (p.mieterhöhungen || []).map(x => x === m ? { ...x, angewendet: true } : x) });
+                }}>Ignorieren</button>
+              </div>
+            ));
+          })()}
           <div className="miet-datum-row">
             <div className="miet-datum-field">
               <label>Von</label>
@@ -5355,7 +5497,34 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
               <DateInput value={s.mietende} onChange={v => set('mietende', v)} />
             </div>
           </div>
+          <Select label="Mietvertragsart" value={s.mietvertragsart || 'standard'} onChange={v => set('mietvertragsart', v)} options={[{ v: 'standard', l: 'Standard' }, { v: 'staffel', l: 'Staffelmiete' }, { v: 'index', l: 'Indexmiete' }]} />
+          {(s.mietvertragsart === 'staffel' || s.mietvertragsart === 'index') && (p.mieterhöhungen || []).filter(m => !m.angewendet).length === 0 && (
+            <p className="hint" style={{marginTop:'-4px'}}>💡 {s.mietvertragsart === 'staffel' ? 'Staffelmiete' : 'Indexmiete'} vereinbart — unten unter „Geplante Mieterhöhungen" die nächste Stufe erfassen, dann erinnert die App automatisch.</p>
+          )}
           <Input label="Kaltmiete" value={s.kaltmiete} onChange={v => set('kaltmiete', v)} suffix="€/Mon." />
+          {/* Mietänderungs-Banner: alten Stand in die Historie sichern */}
+          {(() => {
+            const alteMiete = baseKaltmieteRef.current.id === p.id ? baseKaltmieteRef.current.wert : 0;
+            if (!(alteMiete > 0 && (s.kaltmiete || 0) > 0 && s.kaltmiete !== alteMiete)) return null;
+            return (
+              <div style={{padding:'10px 12px',margin:'6px 0 10px',border:'1px solid #10b981',borderRadius:'8px',background:'rgba(16,185,129,0.07)',fontSize:'12px',display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap'}}>
+                <span style={{flex:1,minWidth:'200px'}}>Mietänderung erkannt: {fmt(alteMiete)} → <b>{fmt(s.kaltmiete)}</b>. Alten Stand in der Historie sichern?</span>
+                <select value={mietAendGrund} onChange={e => setMietAendGrund(e.target.value)} style={{padding:'5px 8px',borderRadius:'6px',border:'1px solid var(--border)',background:'var(--bg-input)',color:'var(--text)',fontSize:'12px'}}>
+                  {Object.entries(MIETGRUND_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                </select>
+                <button style={{padding:'6px 12px',background:'#10b981',color:'#fff',border:'none',borderRadius:'6px',fontSize:'12px',cursor:'pointer',fontWeight:600}} onClick={() => {
+                  const lastBis = (p.miethistorie || []).reduce((acc, h) => (h.bis && (!acc || h.bis > acc)) ? h.bis : acc, '');
+                  const eintrag = { von: lastBis || s.mietbeginn || '', bis: new Date().toISOString().split('T')[0], kaltmiete: alteMiete, nebenkosten: s.nebenkostenVorauszahlung || 0, stellplatz: s.mieteStellplatz || 0, sonstiges: s.mieteSonderausstattung || 0, grund: `${MIETGRUND_LABELS[mietAendGrund]}${s.mieterName ? ' – Mieter: ' + s.mieterName : ''}` };
+                  baseKaltmieteRef.current = { id: p.id, wert: s.kaltmiete };
+                  upd({ ...p, miethistorie: [...(p.miethistorie || []), eintrag] });
+                }}>✓ Sichern</button>
+                <button style={{padding:'6px 10px',background:'transparent',color:'var(--text-muted)',border:'1px solid var(--border)',borderRadius:'6px',fontSize:'12px',cursor:'pointer'}} onClick={() => {
+                  baseKaltmieteRef.current = { id: p.id, wert: s.kaltmiete };
+                  forceMietRender(x => x + 1);
+                }}>Verwerfen</button>
+              </div>
+            );
+          })()}
           <Input label="NK-Vorauszahlung" value={s.nebenkostenVorauszahlung} onChange={v => set('nebenkostenVorauszahlung', v)} suffix="€/Mon." />
           <Input label="Stellplatz" value={s.mieteStellplatz} onChange={v => set('mieteStellplatz', v)} suffix="€/Mon." />
           <Input label="Miete Sonderausst." value={s.mieteSonderausstattung} onChange={v => set('mieteSonderausstattung', v)} suffix="€/Mon." />
@@ -5373,7 +5542,7 @@ const Stamm = ({ p, upd, c, onSave, saved, onOpenImport, onDelete, onDiscard, va
           {(p.mieterhöhungen || []).length > 0 && (
             <div className="miet-erhoehungen-list">
               {(p.mieterhöhungen || []).map((m, i) => (
-                <div key={i} className="miet-erhoehung-row">
+                <div key={i} className="miet-erhoehung-row" style={m.angewendet ? {opacity:0.45} : undefined} title={m.angewendet ? 'Bereits angewendet' : undefined}>
                   <div className="miet-erhoehung-datum">
                     <DateInput 
                       value={m.datum || ''} 
@@ -8355,6 +8524,9 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, userMenu, c
     if (updatedCurr) setCurr(updatedCurr);
   };
 
+  // Signal an Stamm: nach Undo/Redo muss die Mietänderungs-Referenz neu gesetzt werden
+  const [histSignal, setHistSignal] = useState(0);
+
   // Undo Funktion (persistiert den zurückgenommenen Stand auch in saved/Cloud,
   // sonst wäre das Undo nach einem Reload stillschweigend wieder weg)
   const onUndo = () => {
@@ -8367,6 +8539,7 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, userMenu, c
       // Aktuellen State in Redo-History speichern
       setRedoHistory(prevRedo => [...prevRedo, curr]);
       setCurr(prev);
+      setHistSignal(x => x + 1);
       if (prev?.saved) setSaved(sPrev => sPrev.map(x => x.id === prev.id ? prev : x));
     }
   };
@@ -8380,6 +8553,7 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, userMenu, c
       // Aktuellen State in Undo-History speichern
       setHistory(prev => [...prev, curr]);
       setCurr(next);
+      setHistSignal(x => x + 1);
       if (next?.saved) setSaved(sPrev => sPrev.map(x => x.id === next.id ? next : x));
     }
   };
@@ -9706,7 +9880,7 @@ function ImmoHubCore({ initialData, initialBeteiligte, onDataChange, userMenu, c
           </div>
         ) : (
           <>
-            {tab === 'stamm' && <Stamm p={curr} upd={onUpd} c={c} onSave={onSave} saved={isSaved} onOpenImport={() => setImportModal(true)} onDelete={() => setDeleteConfirm(curr?.id)} onDiscard={() => { setCurr(null); setTab('dash'); }} validationErrors={validationErrors} beteiligte={beteiligte} immobilien={saved} onSmartImport={handleSmartImport} onAddEinheit={onAddEinheit} onSelectEinheit={onSelect} onAssignEinheit={onAssignEinheit} onDetachEinheit={onDetachEinheit} onDeleteUnit={onDel} onUpdateUnit={onUpdateUnit} onSplitToUnit={onSplitToUnit} onConvertToContainer={onConvertToContainer} />}
+            {tab === 'stamm' && <Stamm p={curr} upd={onUpd} c={c} histSignal={histSignal} onSave={onSave} saved={isSaved} onOpenImport={() => setImportModal(true)} onDelete={() => setDeleteConfirm(curr?.id)} onDiscard={() => { setCurr(null); setTab('dash'); }} validationErrors={validationErrors} beteiligte={beteiligte} immobilien={saved} onSmartImport={handleSmartImport} onAddEinheit={onAddEinheit} onSelectEinheit={onSelect} onAssignEinheit={onAssignEinheit} onDetachEinheit={onDetachEinheit} onDeleteUnit={onDel} onUpdateUnit={onUpdateUnit} onSplitToUnit={onSplitToUnit} onConvertToContainer={onConvertToContainer} />}
             {tab === 'rendite' && isSaved && <Rendite p={curr} upd={onUpd} c={c} immobilien={saved} />}
             {tab === 'steuer' && isSaved && <Steuer p={curr} upd={onUpd} c={c} immobilien={saved} />}
           </>
